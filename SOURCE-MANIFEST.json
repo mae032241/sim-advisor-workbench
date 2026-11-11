@@ -939,6 +939,11 @@
       "sha256": "bc2b2f5e40b74edf135363586df09c0bb657c98f027e737809413f1e8d8f2d86"
     },
     {
+      "path": "tests/test_branch_scope_hint.py",
+      "bytes": 3516,
+      "sha256": "11fe71575de03342ff7aa91c01f25d7eb357a03799b3ea1dce9de8495cc6a234"
+    },
+    {
       "path": "tests/test_build_control.py",
       "bytes": 4373,
       "sha256": "2ab52184494d26bfacd742c06dcfcbeefd9e52f0a9246d87746e3fc3a62e4621"
@@ -1067,6 +1072,11 @@
       "path": "tests/test_embedding_settings.py",
       "bytes": 9236,
       "sha256": "7a9b4ba868ce33ad547ea70a3a2b4b1bf09a46a9d384db65771122900761130e"
+    },
+    {
+      "path": "tests/test_empty_array_branch.py",
+      "bytes": 3708,
+      "sha256": "3a37a7f8500f8e0d2bed51b4e8f83689d8517a1d9da89c9a4e504a501d1765bc"
     },
     {
       "path": "tests/test_evaluation_legacy.py",
@@ -1535,6 +1545,6 @@
     "offline bundles",
     "local Git history"
   ],
-  "file_count": 304,
-  "total_bytes": 4207076
+  "file_count": 306,
+  "total_bytes": 4214300
 }
