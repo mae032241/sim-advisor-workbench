@@ -144,8 +144,11 @@ def test_real_gate_action_loop_sends_only_public_inputs_and_saves_bounded_audit(
             return {"result": {"libraries": [{"id": "manual", "name": "Manual", "enabled": True},
                                               {"id": "private-set", "name": "DISABLED_LIBRARY_CANARY", "enabled": False}]}}
         if payload["name"] == "search_knowledge":
-            return {"result": {"results": [{"id": "evidence-1", "library_id": "manual", "excerpt": "source excerpt"}]}}
-        return {"result": {"id": "evidence-1", "library_id": "manual", "text": "Real fixture knowledge page"}}
+            return {"result": {"results": [{"id": "evidence-1", "library_id": "manual", "kind": "case",
+                "source_context": {"role": "saved_configuration", "case_identity": "example-fixture",
+                                   "applicability": "not_verified"}, "excerpt": "source excerpt"}]}}
+        return {"result": {"id": "evidence-1", "library_id": "manual", "text": "Real fixture knowledge page",
+                           "offset": 0, "next_offset": None, "total_characters": 27}}
 
     actions = [tool_action("search_knowledge", query="mesh verification", kind="manual", mode="native"),
                tool_action("read_source", id="evidence-1", offset=0, length=12000), final_action()]
@@ -168,6 +171,16 @@ def test_real_gate_action_loop_sends_only_public_inputs_and_saves_bounded_audit(
     assert result["plan_sha256"] == cli.core.sha256(destination / "plan.md")
     assert result["evaluation_set_retrieval_enabled"] is False
     assert result["solver_run"] is False and result["thought_chain_stored"] is False
+    assert result["knowledge_calls"][0]["source_kind_counts"] == {"case": 1}
+    read_summary = result["knowledge_calls"][1]["source_summaries"][0]
+    assert read_summary["kind"] == "case"
+    assert read_summary["source_context"]["role"] == "saved_configuration"
+    assert read_summary["source_context"]["case_identity"] == "example-fixture"
+    assert read_summary["content_excerpt"] == "Real fixture knowledge page"
+    assert result["knowledge_calls"][1]["read_range"]["offset"] == 0
+    assert result["instructions_sha256"] == cli.text_sha256(cli.INSTRUCTIONS)
+    assert result["model_input_sha256"] == cli.core.sha256(destination / "model-input.json")
+    assert all(len(record["prompt_sha256"]) == 64 for record in result["model_execution_audit"])
     assert json.loads(prompts[0])["question"]["input_data"]["inputs/observations.csv"] == "time,value\n0,1\n1,2\n"
     assert next(request for request in requests if request["name"] == "read_source")["arguments"]["id"] == "evidence-1"
     sent = "\n".join(prompts)
@@ -191,7 +204,7 @@ def test_final_without_real_read_is_rejected_and_isolation_changes_stop_calls(tm
             return {"result": {"libraries": [{"id": "manual", "enabled": True}]}}
         return {"result": {"results": [{"id": "evidence-1", "library_id": "manual"}]}}
 
-    outputs = [tool_action("search_knowledge", query="mesh", kind="manual", mode="native"), final_action()]
+    outputs = [tool_action("search_knowledge", query="mesh", kind="manual", mode="native"), final_action(), final_action()]
     calls = []
 
     def runner(command, **kwargs):
@@ -209,7 +222,7 @@ def test_final_without_real_read_is_rejected_and_isolation_changes_stop_calls(tm
     rejected_report = cli.core.load_json(destination / "run.json")
     assert rejected_report["status"] == "incomplete"
     assert rejected_report["failure_code"] == "final_citations_unread"
-    assert rejected_report["citation_repair_count"] == 0
+    assert rejected_report["citation_repair_count"] == 1
     assert rejected_report["rejected_candidates"][0]["failure_code"] == "final_citations_unread"
     assert (destination / "rejected-plan-02.md").is_file()
     args.destination = tmp_path / "isolated-run"
@@ -257,7 +270,7 @@ def scripted_case(tmp_path, monkeypatch, finals):
 
 @pytest.mark.parametrize("failure_code", ["final_citations_unread", "final_declared_citation_missing_from_text",
                                           "final_contains_unread_source"])
-def test_rejected_final_is_saved_and_one_citation_only_repair_can_succeed(tmp_path, monkeypatch, failure_code):
+def test_rejected_final_and_one_citation_feedback_are_saved(tmp_path, monkeypatch, failure_code):
     bad = final_action("evidence-2") if failure_code == "final_citations_unread" else final_action()
     if failure_code == "final_declared_citation_missing_from_text":
         bad["plan_markdown"] = "Complete visible implementation plan with no citation token."
@@ -283,6 +296,18 @@ def test_rejected_final_is_saved_and_one_citation_only_repair_can_succeed(tmp_pa
     assert repair["failure_codes"][0] == failure_code
     assert repair["read_source_ids"] == ["evidence-1"]
     assert repair["rejected_plan_markdown"] == bad["plan_markdown"]
+    _, expected_diagnostics = cli.final_citation_diagnostics(bad, {"evidence-1"}, {"evidence-1", "evidence-2"})
+    for key, ids in expected_diagnostics.items():
+        assert repair[key] == ids
+    assert repair["unread_but_discovered_source_ids"] == sorted(
+        set(expected_diagnostics["unread_declared_citation_ids"])
+        | set(expected_diagnostics["unread_source_ids_in_text"]))
+    assert repair["unrecognized_declared_citation_count"] == 0
+    assert "可在原剩余预算内自行read_source核实" in repair["instructions"]
+    assert "允许正常action=tools" in repair["instructions"]
+    feedback_path = args.destination / rejected["feedback_path"]
+    assert cli.core.load_json(feedback_path) == repair
+    assert report["citation_feedback_path"] == rejected["feedback_path"]
     assert prompts[-1]["tool_history"] == prompts[-2]["tool_history"]
     assert all(canary not in json.dumps(prompts) for canary in
                ["PRIVATE_REFERENCE_CANARY", "MANAGEMENT_SECRET_CANARY", "THOUGHT_CHAIN_CANARY", "RAW_CLI_CANARY"])
@@ -303,6 +328,34 @@ def test_citation_repair_is_limited_to_one_and_failed_candidates_remain_unscored
     assert len(prompts) == 4 and len(report["rejected_candidates"]) == 2
     assert {item["path"] for item in report["rejected_candidates"]} == {"rejected-plan-03.md", "rejected-plan-04.md"}
     assert all(item["scored"] is False for item in report["rejected_candidates"])
+    assert not (args.destination / "plan.md").exists()
+
+
+def test_citation_feedback_allows_source_read_without_new_budget_or_sampling(tmp_path, monkeypatch):
+    args, prompts, run = scripted_case(tmp_path, monkeypatch, [final_action("evidence-2"),
+        tool_action("read_source", id="evidence-2", offset=0, length=12000), final_action("evidence-2")])
+    report = run()
+    assert report["status"] == "complete" and report["model_call_count"] == 5
+    assert report["max_rounds"] == 16 and report["citation_repair_count"] == 1
+    assert report["knowledge_call_counts"] == {"search_knowledge": 1, "read_source": 2}
+    assert len(report["rejected_candidates"]) == 1
+    assert prompts[-1]["remaining_read_calls"] == cli.MAX_READ_CALLS - 2
+    assert prompts[-1]["citation_repair"] == prompts[-2]["citation_repair"]
+    assert prompts[-1]["citation_repair"]["unread_but_discovered_source_ids"] == ["evidence-2"]
+    assert report["cited_source_ids"] == ["evidence-2"]
+
+
+def test_citation_feedback_cannot_reset_the_source_read_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "MAX_READ_CALLS", 1)
+    args, prompts, run = scripted_case(tmp_path, monkeypatch, [final_action("evidence-2"),
+        tool_action("read_source", id="evidence-2", offset=0, length=12000)])
+    with pytest.raises(cli.PlanningValidationError) as error:
+        run()
+    assert error.value.code == "read_budget_exceeded"
+    report = cli.core.load_json(args.destination / "run.json")
+    assert report["knowledge_call_counts"] == {"search_knowledge": 1, "read_source": 1}
+    assert report["model_call_count"] == 4 and report["citation_repair_count"] == 1
+    assert prompts[-1]["remaining_read_calls"] == 0
     assert not (args.destination / "plan.md").exists()
 
 

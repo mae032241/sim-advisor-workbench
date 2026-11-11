@@ -16,6 +16,53 @@ _RELATED_FIELDS = {"id", "title", "kind", "type", "feature_branch", "category", 
     "reason", "available", "library_id", "revision_id", "alignment"}
 
 
+def source_context(source):
+    """Small, deterministic provenance hints; no body reads or inferred physics.
+
+    A tutorial section can live in a manual library and have a generic heading.
+    Its extracted tutorial identity, rather than that library's name, identifies
+    the example. Case names below are identifier labels, not generated titles.
+    """
+    data = source.get("data") if isinstance(source.get("data"), dict) else {}
+    source_type = source.get("type")
+    tutorial = data.get("tutorial_identity")
+    tutorial = tutorial if isinstance(tutorial, str) and tutorial else None
+    role = {"model_case": "model_overview", "saved_configuration": "saved_configuration",
+            "api_configuration": "api_observation", "implementation_snippet": "implementation_snippet"}.get(source_type)
+    if role is None:
+        role = ("case_tutorial" if tutorial or data.get("canonical_tutorial") or source_type in {"method_step", "case_context"}
+                else "general_manual" if source.get("kind") == "manual" or source_type == "manual_topic"
+                else "implementation_snippet" if source.get("kind") == "code" else "unknown")
+    result = {"role": role, "applicability": "not_verified"}
+
+    def add(key, value, maximum=160):
+        if isinstance(value, str) and value:
+            result[key] = value[:maximum]
+
+    add("package", source.get("package"))
+    if tutorial:
+        add("case_identity", tutorial, 240)
+        add("case_name", tutorial.rsplit(".", 1)[-1])
+        add("package", tutorial.rsplit(".", 1)[0])
+    elif role in {"model_overview", "saved_configuration", "api_observation", "case_tutorial", "implementation_snippet"}:
+        asset = source.get("asset_key")
+        if isinstance(asset, str) and asset:
+            add("case_identity", asset, 240)
+            name = asset.replace("\\", "/").rsplit("/", 1)[-1].split(":")[-1]
+            add("case_name", name.rsplit(".", 1)[0])
+    for key in ("feature_branch", "feature_type", "section", "status", "model_agreement", "execution_status",
+                "effective_activation", "physical_validation"):
+        add(key, data.get(key) or source.get(key))
+    # Preserve only explicitly extracted interface labels. A package or tutorial
+    # slug is never evidence that the source contains a given physics interface.
+    physics = source.get("physics")
+    if isinstance(physics, list):
+        labels = [label[:120] for label in physics if isinstance(label, str) and label][:6]
+        if labels:
+            result["physics"] = labels
+    return result
+
+
 def _compact(value, depth=0):
     if isinstance(value, str):
         return value if len(value) <= 320 else value[:320] + "…"
@@ -37,6 +84,7 @@ def _compact(value, depth=0):
 def candidate_view(source):
     """Search candidates carry bounded hints, never full code or model trees."""
     result = {key: _compact(value) for key, value in source.items() if key in _CANDIDATE_FIELDS}
+    result["source_context"] = source_context(source)
     data = source.get("data") if isinstance(source.get("data"), dict) else {}
     if data:
         result["data"] = {key: _compact(value) for key, value in data.items() if key in _DATA_FIELDS}

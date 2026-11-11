@@ -17,6 +17,7 @@ from .planning_validation import (DESIGN_BRIEF_SCHEMA,QUESTION_SCHEMA,validate_r
 from .sessions import write_json
 from .case_metadata import FEATURE_BRANCHES, normalize_feature_branch
 from .knowledge_views import candidate_view, related_sources_view, source_context_view
+from .research_policy import SEARCH_KNOWLEDGE_DESCRIPTION, READ_SOURCE_DESCRIPTION
 
 def obj(properties):
     return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
@@ -47,7 +48,7 @@ def planning_tools():
         return {"name": name, "description": description, "inputSchema": schema}
     search_schema = obj({"query": STR, "kind": {"type": "string", "enum": ["all", "manual", "case", "code"]},
         "mode": {"type": "string", "enum": ["native", "qmd_keyword", "qmd_vector"]},
-        "feature_branch": {"type": "string", "enum": list(FEATURE_BRANCHES), "description": "可选：仅检索指定建模分支，省略时不限制分支。"},
+        "feature_branch": {"type": "string", "enum": list(FEATURE_BRANCHES), "description": "可选：仅匹配已标注的建模分支，未标注来源会被排除。查通用定义或案例概览时可省略。"},
         "library_ids": dict(LIBRARY_IDS, description="可选：仅检索这些已启用资料库；可先get_library_scope查询目录并按需启用指定库。")})
     search_schema["required"].remove("feature_branch")
     search_schema["required"].remove("library_ids")
@@ -55,8 +56,8 @@ def planning_tools():
     scope_schema["required"] = []
     return [
         tool("get_plan", "读取绑定方案的需求、模型事实、用户回答、当前流程、版本与几何事实白名单。首次及保存前调用。", obj({})),
-        tool("search_knowledge", "检索本地官方手册、官方案例和用户案例。kind与可选feature_branch先限制检索范围；native/QMD覆盖各自已建索引。结果只是候选，引用前必须read_source。", search_schema),
-        tool("read_source", "分页读取真实来源、目录父子关系及链接。若是目录或摘要，沿关联章节继续读到设置正文，不用目录充当实施依据。", obj({
+        tool("search_knowledge", SEARCH_KNOWLEDGE_DESCRIPTION, search_schema),
+        tool("read_source", READ_SOURCE_DESCRIPTION, obj({
             "id": STR, "offset": {"type": "integer", "minimum": 0}, "length": {"type": "integer", "minimum": 500, "maximum": 16000}})),
         tool("save_plan", "保存完整、可审阅的路线设计与流程。仅可引用当前会话实际读取的来源或原方案已有来源；不会替用户回答/确认。缺少用户输入写questions，方法证据不足写evidence_gaps。", SAVE_SCHEMA),
         tool("update_steps", "按原id替换最多8个已有流程节点，不重写全文。保留未更改节点、问题、确认门槛和未决项；新增/删除节点或清除全局阻塞时用save_plan。", PATCH_SCHEMA),
@@ -183,7 +184,12 @@ class PlanningService:
                     raise ValueError("library_ids需要1至1000个非空资料库ID。")
                 filters["library_ids"] = list(dict.fromkeys(library_ids))
             hits = self.kb.search(query, limit=6, kind=kind, filters=filters)
-            return {"mode": mode, "results": [candidate_view(hit) for hit in hits], "note": "候选检索结果；请read_source后再引用。"}
+            search_scope = {"feature_branch": branch,
+                "branch_filter_mode": "explicit_labels_only" if branch is not None else "not_applied",
+                "unlabeled_sources_excluded": branch is not None}
+            if branch is not None:
+                search_scope["note"] = "分支为硬过滤，仅匹配已标注来源；未标注的通用手册或案例概览会被排除。查定义、概览或结果不足时，可显式省略feature_branch重新检索。"
+            return {"mode": mode, "search_scope": search_scope, "results": [candidate_view(hit) for hit in hits], "note": "候选检索结果；请read_source后再引用。"}
         if name == "read_source":
             source = self.kb.get_document(args.get("id", ""))
             if not source:
@@ -207,7 +213,8 @@ class PlanningService:
                 except PermissionError:
                     target = None
                 if target:
-                    links.append({"id": target["id"], "title": target["title"]})
+                    links.append({"id": target["id"], "title": target["title"],
+                                  **({"library_id": target["library_id"]} if target.get("library_id") else {})})
             related, related_warning = [], None
             get_related = getattr(self.kb, "related_sources", None)
             if callable(get_related):

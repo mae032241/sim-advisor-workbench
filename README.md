@@ -1,8 +1,10 @@
 # Sim Advisor Workbench
 
-本地 COMSOL 仿真方案工作台。当前 DSH 插件版本为 **0.2.48**，同时提供独立 Python 服务、CLI 和 MCP 桥接。
+本地 COMSOL 仿真方案工作台。当前 DSH 插件版本为 **0.2.49**，同时提供独立 Python 服务、CLI 和 MCP 桥接。
 
 工作台将需求、STEP/STP/MPH 模型事实、用户回答、资料引用和方案版本放在同一流程中。规划工具由独立的 `PlanningService` 提供，模型后端通过适配器接入。保存方案与聊天回复分别管理，结构校验和用户确认不能替代工程验证。
+
+规划模板通过 `advisor.research_policy.load_planner_instructions` 加载，展开通用规划和资料研究策略；自定义 Agent 宿主也应使用该入口。检索及读取返回的 `source_context` 区分手册、案例教程、保存配置和 API 观测，并保留适用性未核实的状态。Agent 应分别查阅手册和相近案例，核对机制、配置依赖与迁移边界，不能把检索命中当作已经验证的实现。
 
 ## 从源码启动
 
@@ -22,7 +24,7 @@ DSH 插件和 JavaScript 测试需要 Node.js 24.9 或更新版本。DSH、Codex
 python scripts/build_dsh_workbench.py
 ```
 
-将生成的 `dist/sim-advisor-workbench-0.2.48.tgz` 通过 DSH 官方插件管理器安装。应安装构建后的 `.tgz` 包；源码目录缺少打包时组装的运行资源，不能直接作为完整插件安装。配置数据目录和所需依赖后，可通过侧栏或 `start_workbench` 启动，通过 `create_workbench_plan` 创建方案并绑定当前会话。
+将生成的 `dist/sim-advisor-workbench-0.2.49.tgz` 通过 DSH 官方插件管理器安装。应安装构建后的 `.tgz` 包；源码目录缺少打包时组装的运行资源，不能直接作为完整插件安装。配置数据目录和所需依赖后，可通过侧栏或 `start_workbench` 启动，通过 `create_workbench_plan` 创建方案并绑定当前会话。
 
 详见 [插件打包](docs/dsh-plugin-package.md)、[DSH 接入](docs/dsh-workbench.md) 和 [可选依赖](docs/offline-dependencies.md)。
 

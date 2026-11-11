@@ -1,6 +1,6 @@
 # DSH 接入工作台
 
-推荐使用完整的 `@local/sim-advisor-workbench` 插件，当前版本 **0.2.48**。构建后通过 DSH 官方插件管理器安装 `.tgz`，步骤见 [插件打包](dsh-plugin-package.md)。不要直接安装插件源码目录。DSH 与所用模型服务需自行安装、登录和配置。
+推荐使用完整的 `@local/sim-advisor-workbench` 插件，当前版本 **0.2.49**。构建后通过 DSH 官方插件管理器安装 `.tgz`，步骤见 [插件打包](dsh-plugin-package.md)。不要直接安装插件源码目录。DSH 与所用模型服务需自行安装、登录和配置。
 
 ## 在当前 DSH 会话使用
 

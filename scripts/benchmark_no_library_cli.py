@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -20,6 +19,7 @@ if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 
 from advisor.agent_backend import AgentBackendError
+from advisor.research_policy import COMMON_PLANNING_POLICY, PLANNING_POLICY_VERSION, text_sha256
 from scripts import benchmark_codex_cli as cli
 
 core = cli.core
@@ -35,12 +35,7 @@ INSTRUCTIONS = """你负责提出可实施的 COMSOL 仿真规划，无需也不
 不得调用 Codex 内置的 shell、文件、网络、MCP、子代理或任何本机工具，也不得读取本机文件。
 本轮没有资料库、检索或来源读取工具；不得请求检索，不编造已查证的来源或来源 ID。
 只提交最终方案，不要把草稿、分析、检索理由或思维链放在输出里。
-方案应具体说明需求范围、几何域与选择、材料和边界、物理耦合、网格、研究/求解顺序、验证与风险。公开题未给的数据明确列为待确认，不编造数值结果。
-"""
-
-
-def text_sha256(value):
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+""" + "\n" + COMMON_PLANNING_POLICY
 
 
 def validate_plan(value):
@@ -76,6 +71,8 @@ def plan(root, args, *, runner=None, command=None):
         "input_packet_sha256": text_sha256(question_text),
         "prepared_question_sha256": core.sha256(destination / "question.json"),
         "instructions_sha256": text_sha256(INSTRUCTIONS),
+        "planning_policy_version": PLANNING_POLICY_VERSION,
+        "common_planning_policy_sha256": text_sha256(COMMON_PLANNING_POLICY),
         "knowledge_library_enabled": False, "library_ids": [], "knowledge_calls": [],
         "knowledge_call_counts": {}, "knowledge_call_count": 0, "read_source_ids": [],
         "cited_source_ids": [], "private_reference_supplied": False,

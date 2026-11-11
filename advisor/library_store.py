@@ -1589,10 +1589,24 @@ class LibraryStore:
         self.require_readable_library(source["library_id"])
         from .tutorial_catalog import links, retired_targets
         tutorial_links = links(self, source, limit=limit)
-        base_links = []
+        case_links, base_links = [], []
         with closing(self.connect()) as db:
             from .compact_api_overlay import pinned_base_authority
-            base = pinned_base_authority(db, source)
+            authority = source
+            if source.get("type") != "model_case" and source.get("case_group"):
+                # Some thin API observations have no explicit same_case
+                # relation. The existing immutable group, never active/latest,
+                # supplies one overview reference without hydrating its body.
+                row = db.execute("SELECT r.payload FROM case_members m JOIN revisions r ON r.id=m.citation_id "
+                                 "WHERE m.group_id=? AND m.local_id='model-case'", (source["case_group"],)).fetchone()
+                target = json.loads(row[0]) if row else None
+                fields = ("library_id", "asset_key", "asset_hash", "case_group")
+                if (target and target.get("type") == "model_case"
+                        and tuple(target.get(key) for key in fields) == tuple(source.get(key) for key in fields)):
+                    authority = target
+                    case_links.append({"id": target["id"], "library_id": target["library_id"], "title": target["title"],
+                                       "type": "model_case", "relation": "same_case", "status": "pinned_case_version"})
+            base = pinned_base_authority(db, authority)
             if base:
                 base_links.append({"id": base["id"], "library_id": base["library_id"], "title": base["title"], "type": "model_case",
                                    "relation": "saved_xml_base", "status": "pinned_saved_xml_version"})
@@ -1613,7 +1627,9 @@ class LibraryStore:
         relations = list(source.get("relations", []))
         rank = {"requires": 0, "same_case": 1, "context": 2, "documented_by": 3, "follows_document_order": 4}
         relations.sort(key=lambda item: rank.get(item.get("type"), 4))
-        output, seen = [*base_links, *tutorial_links][:limit], set()
+        output, seen = [*case_links, *base_links, *tutorial_links][:limit], set()
+        if case_links:
+            seen.add(("same_case", "model-case"))
         if len(output) >= limit:
             return finish(output)
         with closing(self.connect()) as db:
@@ -1636,7 +1652,7 @@ class LibraryStore:
                     target = None
                 item = {"relation": relation.get("type"), "status": relation.get("status", "source_relation") if target else "unresolved"}
                 if target:
-                    item.update(id=target["id"], title=target["title"], type=target["type"], feature_branch=object_feature_branch(target))
+                    item.update(id=target["id"], library_id=target["library_id"], title=target["title"], type=target["type"], feature_branch=object_feature_branch(target))
                 else:
                     item.update(title=local, reason="Referenced object is not pinned in this case revision")
                 if relation.get("alignment"):

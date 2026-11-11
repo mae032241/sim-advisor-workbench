@@ -88,6 +88,8 @@ def test_one_generation_has_identical_public_question_and_zero_library_access(tm
     assert result["prepared_question_sha256"] == cli.core.sha256(destination / "question.json")
     assert result["input_packet_sha256"] == cli.text_sha256(json.dumps(expected_question, ensure_ascii=False))
     assert result["instructions_sha256"] == cli.text_sha256(cli.INSTRUCTIONS)
+    assert result["common_planning_policy_sha256"] == cli.text_sha256(cli.COMMON_PLANNING_POLICY)
+    assert result["planning_policy_version"] == cli.PLANNING_POLICY_VERSION
     assert result["knowledge_library_enabled"] is False
     assert result["library_ids"] == result["knowledge_calls"] == result["read_source_ids"] == []
     assert result["knowledge_call_count"] == result["retry_count"] == 0

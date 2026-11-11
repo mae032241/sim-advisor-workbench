@@ -1,6 +1,6 @@
 # DSH 插件打包
 
-完整插件为 `@local/sim-advisor-workbench`，当前版本 **0.2.48**。插件包含工作台 Python 源码、CLI、网页、规划提示词、DSH Bridge 和资源清单。COMSOL、官方资料、用户模型、资料库索引、模型权重、Python/Node 运行环境及依赖二进制均由用户自行准备。
+完整插件为 `@local/sim-advisor-workbench`，当前版本 **0.2.49**。插件包含工作台 Python 源码、CLI、网页、规划提示词、DSH Bridge 和资源清单。COMSOL、官方资料、用户模型、资料库索引、模型权重、Python/Node 运行环境及依赖二进制均由用户自行准备。
 
 ## 构建与安装
 
@@ -10,7 +10,7 @@
 python scripts/build_dsh_workbench.py
 ```
 
-默认生成 `dist/sim-advisor-workbench-0.2.48.tgz`、资源清单和 SHA256 文件。也可用 `--out-dir <输出目录>` 指定目标。构建器按源码白名单组装 `runtime/`、`bridge/` 和其它插件资源，并复核压缩包内容。
+默认生成 `dist/sim-advisor-workbench-0.2.49.tgz`、资源清单和 SHA256 文件。也可用 `--out-dir <输出目录>` 指定目标。构建器按源码白名单组装 `runtime/`、`bridge/` 和其它插件资源，并复核压缩包内容。
 
 在 DSH 官方插件管理器中安装生成的 `.tgz`。插件源码目录不含完整打包资源，不能直接安装为完整插件。若已使用旧的独立 Bridge，先停用重复工具提供方，再启用完整插件。
 

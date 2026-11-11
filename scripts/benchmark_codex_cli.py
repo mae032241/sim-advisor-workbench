@@ -24,7 +24,10 @@ if str(APP) not in sys.path:
 
 from advisor.agent_backend import AgentBackendError
 from advisor.config import codex_command
+from advisor.case_metadata import FEATURE_BRANCHES
 from advisor.process_runner import ProcessOutputLimitError, run_text
+from advisor.research_policy import (COMMON_PLANNING_POLICY, PLANNING_POLICY_VERSION,
+                                     RESEARCH_POLICY, RESEARCH_POLICY_VERSION, text_sha256)
 from scripts import benchmark_cli as benchmark
 
 core = benchmark.core
@@ -34,12 +37,15 @@ MAX_BATCH_CALLS = 6
 EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 CITATION_FAILURE_CODES = {"final_citations_unread", "final_declared_citation_missing_from_text",
                           "final_contains_unread_source"}
+CITATION_FEEDBACK_ID_LIMIT = 24
+CITATION_FEEDBACK_ID_MAX_CHARACTERS = 240
 
 
 class PlanningValidationError(ValueError):
     """A controller-owned, fixed diagnostic code without exception contents."""
-    def __init__(self, code, message):
+    def __init__(self, code, message, *, detail_code=None):
         self.code = code
+        self.detail_code = detail_code
         super().__init__(message)
 
 
@@ -55,7 +61,7 @@ ARGUMENT_PROPERTIES = {
     "kind": nullable("string", enum=["all", "manual", "case", "code", None]),
     "mode": nullable("string", enum=["native", "qmd_keyword", None]),
     "library_ids": nullable("array", items={"type": "string"}),
-    "feature_branch": nullable("string"),
+    "feature_branch": nullable("string", enum=[*FEATURE_BRANCHES, None]),
     "id": nullable("string"),
     "offset": nullable("integer", minimum=0),
     "length": nullable("integer", minimum=500, maximum=16000),
@@ -83,13 +89,13 @@ INSTRUCTIONS = """你负责提出可实施的 COMSOL 仿真规划，无需也不
 本轮你只能输出符合 schema 的 JSON action，不得调用 Codex 内置的 shell、文件、网络、MCP、子代理或任何本机工具，也不得读取本机文件。
 选择 action=tools 时提交 1 至 6 个 tool_requests；Python 会依序执行 get_library_scope、search_knowledge、read_source。
 每个 arguments 必须包含 schema 列出的所有字段；不适用的字段用 null。tool_requests 的各请求依序执行，故同批后续请求可读取此前检索已发现的来源。
+参数是否适用只由 knowledge_tools 中对应工具的 parameters.properties 决定：get_library_scope 的全部 arguments 字段均为 null；search_knowledge 仅 query/kind/mode/library_ids/feature_branch 可非 null；read_source 仅 id/offset/length 可非 null，其 query/kind/mode/library_ids/feature_branch 必须为 null。不能把上一请求的参数沿用到另一个工具。
 首轮必须检索：返回 action=tools，至少包含一个 search_knowledge；固定库范围已给出。之后可自由选择上述工具或提交最终方案。
-克制检索：全程最多 12 次 search_knowledge、8 次 read_source。优先少量针对性检索，通常约 3 次有针对性的来源读取已足够；确有必要时再补充读取，随后完成方案。
+全程最多 12 次 search_knowledge、8 次 read_source，最多给定轮数；按关键实施问题安排预算，引用反馈后的检索与补读也计入相同总预算。
 search_knowledge 只支持 native / qmd_keyword，不能扩大固定库范围；read_source 只能使用工具实际发现的来源 ID。
 最终 action=final：tool_requests=null，plan_markdown 为完整中文实施方案，cited_source_ids 列出非空且已实际 read_source 的 ID，并在方案正文原样引用这些 ID。
 工具请求时 plan_markdown 和 cited_source_ids 均为 null；不要把草稿、分析、检索理由或思维链放在输出里。
-方案应具体说明需求范围、几何域与选择、材料和边界、物理耦合、网格、研究/求解顺序、验证与风险。公开题未给的数据明确列为待确认，不编造数值结果。
-"""
+""" + "\n" + COMMON_PLANNING_POLICY + "\n\n" + RESEARCH_POLICY
 
 
 def execution_audit(stdout, returncode):
@@ -162,7 +168,7 @@ class CodexActionBackend:
         if not self.command:
             raise AgentBackendError("Codex CLI is unavailable; no replacement model was run")
         started = time.monotonic()
-        record = {"round": round_number, "status": "incomplete"}
+        record = {"round": round_number, "status": "incomplete", "prompt_sha256": text_sha256(prompt)}
         self.records.append(record)
         # This cwd contains only the schema and a transient final JSON action.
         # It is outside the project and never contains benchmark references.
@@ -208,36 +214,126 @@ class CodexActionBackend:
                 record["seconds"] = round(time.monotonic() - started, 3)
 
 
-def validate_action(value):
-    if not isinstance(value, dict) or set(value) != set(ACTION_SCHEMA["required"]):
-        raise PlanningValidationError("invalid_action", "Action must have exactly the required schema fields")
+def _json_type(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "other"
+
+
+def action_shape_summary(value):
+    """Describe only schema-owned names, types and counts; never model text."""
+    result = {"schema": "simulation-plan-action-shape/v1", "root_type": _json_type(value)}
+    if not isinstance(value, dict):
+        return result
+    known_fields = ACTION_SCHEMA["required"]
+    result.update(fields_present=[key for key in known_fields if key in value],
+                  unknown_field_count=sum(key not in known_fields for key in value),
+                  action=value.get("action") if value.get("action") in ("tools", "final") else "unrecognized")
+    requests = value.get("tool_requests")
+    result["tool_requests_type"] = _json_type(requests)
+    if isinstance(requests, list):
+        result["tool_request_count"] = len(requests)
+        summaries = []
+        for call in requests[:MAX_BATCH_CALLS]:
+            summary = {"type": _json_type(call)}
+            if isinstance(call, dict):
+                summary.update(fields_present=[key for key in ("name", "arguments") if key in call],
+                               unknown_field_count=sum(key not in {"name", "arguments"} for key in call),
+                               name=call.get("name") if call.get("name") in tuple(benchmark.ALLOWED_TOOLS) else "unrecognized")
+                arguments = call.get("arguments")
+                summary["arguments_type"] = _json_type(arguments)
+                if isinstance(arguments, dict):
+                    summary["argument_types"] = {key: _json_type(arguments[key]) for key in ARGUMENT_PROPERTIES if key in arguments}
+                    summary["nonnull_argument_fields"] = [key for key in ARGUMENT_PROPERTIES if key in arguments and arguments[key] is not None]
+                    summary["unknown_argument_count"] = sum(key not in ARGUMENT_PROPERTIES for key in arguments)
+            summaries.append(summary)
+        result["tool_request_shapes"] = summaries
+    plan = value.get("plan_markdown")
+    result["plan_markdown_type"] = _json_type(plan)
+    if isinstance(plan, str):
+        result["plan_markdown_characters"] = len(plan)
+    citations = value.get("cited_source_ids")
+    result["cited_source_ids_type"] = _json_type(citations)
+    if isinstance(citations, list):
+        result["citation_count"] = len(citations)
+        result["citation_item_types"] = dict(Counter(_json_type(item) for item in citations))
+        result["empty_citation_count"] = sum(isinstance(item, str) and not item for item in citations)
+    return result
+
+
+def normalize_inactive_arrays(value):
+    """Treat only empty inactive arrays as null, without mutating the action."""
+    if not isinstance(value, dict):
+        return value, []
+    field = {"tools": "cited_source_ids", "final": "tool_requests"}.get(value.get("action")) if isinstance(value.get("action"), str) else None
+    if field and isinstance(value.get(field), list) and not value[field]:
+        return value | {field: None}, [f"{field}_empty_array_to_null"]
+    return value, []
+
+
+def validate_action(value, *, normalization_flags=None):
+    value, flags = normalize_inactive_arrays(value)
+    if normalization_flags is not None:
+        normalization_flags.extend(flags)
+    def invalid(detail_code, message):
+        raise PlanningValidationError("invalid_action", message, detail_code=detail_code)
+
+    if not isinstance(value, dict):
+        invalid("root_type", "Action must be an object")
+    if set(value) != set(ACTION_SCHEMA["required"]):
+        invalid("root_fields", "Action must have exactly the required schema fields")
     if value["action"] == "tools":
         calls = value["tool_requests"]
-        if (not isinstance(calls, list) or not 1 <= len(calls) <= MAX_BATCH_CALLS
-                or value["plan_markdown"] is not None or value["cited_source_ids"] is not None):
-            raise PlanningValidationError("invalid_action", "Tool action requires 1 to 6 requests and null final fields")
+        if not isinstance(calls, list):
+            invalid("tool_requests_type", "Tool action requires an array of requests")
+        if not 1 <= len(calls) <= MAX_BATCH_CALLS:
+            invalid("tool_request_count", "Tool action requires 1 to 6 requests")
+        if value["plan_markdown"] is not None or value["cited_source_ids"] is not None:
+            invalid("tool_final_fields", "Tool action requires null final fields")
         cleaned = []
         specs = {tool["function"]["name"]: tool["function"]["parameters"] for tool in benchmark.weak_tools()}
         for call in calls:
-            if (not isinstance(call, dict) or set(call) != {"name", "arguments"}
-                    or not isinstance(call["name"], str) or call["name"] not in specs
-                    or not isinstance(call["arguments"], dict)
-                    or set(call["arguments"]) != set(ARGUMENT_PROPERTIES)):
-                raise PlanningValidationError("invalid_action", "Invalid knowledge-tool action shape")
+            if not isinstance(call, dict) or set(call) != {"name", "arguments"}:
+                invalid("tool_call_fields", "Tool calls must contain only name and arguments")
+            if not isinstance(call["name"], str) or call["name"] not in specs:
+                invalid("tool_name", "Tool name must be one of the allowed knowledge tools")
+            if not isinstance(call["arguments"], dict):
+                invalid("tool_arguments_type", "Tool arguments must be an object")
+            if set(call["arguments"]) != set(ARGUMENT_PROPERTIES):
+                invalid("tool_arguments_fields", "Tool arguments must contain exactly the schema fields")
             args = {key: value for key, value in call["arguments"].items() if value is not None}
             if set(args) - set(specs[call["name"]]["properties"]):
-                raise PlanningValidationError("invalid_action", "Inactive tool arguments must be null")
+                invalid("inactive_tool_arguments", "Inactive tool arguments must be null")
+            if "feature_branch" in args and args["feature_branch"] not in FEATURE_BRANCHES:
+                invalid("feature_branch_value", "Feature branch must be one of the product feature categories")
             cleaned.append({"name": call["name"], "arguments": args})
         return cleaned
     if value["action"] == "final":
+        if value["tool_requests"] is not None:
+            invalid("final_tool_requests", "Final action requires null tool requests")
+        if not isinstance(value["plan_markdown"], str):
+            invalid("final_plan_type", "Final action requires a complete plan")
+        if not value["plan_markdown"].strip():
+            invalid("final_plan_empty", "Final action requires a complete plan")
         citations = value["cited_source_ids"]
-        if (value["tool_requests"] is not None or not isinstance(value["plan_markdown"], str)
-                or not value["plan_markdown"].strip() or not isinstance(citations, list)
-                or not citations or any(not isinstance(sid, str) or not sid for sid in citations)):
-            raise PlanningValidationError("invalid_action", "Final action requires a complete plan and nonempty source IDs")
+        if not isinstance(citations, list):
+            invalid("final_citations_type", "Final action requires an array of source IDs")
+        if not citations:
+            invalid("final_citations_empty", "Final action requires nonempty source IDs")
+        if any(not isinstance(sid, str) or not sid for sid in citations):
+            invalid("final_citation_id", "Final action requires nonempty string source IDs")
         return None
-    raise PlanningValidationError("invalid_action", "Unknown planning action")
-
+    invalid("action_value", "Unknown planning action")
 
 def source_id_in_text(source_id, content):
     # A source ID must be a whole identifier, rather than a prefix of a longer
@@ -261,6 +357,28 @@ def final_citation_diagnostics(action, read_ids, known_ids):
     if diagnostics["unread_source_ids_in_text"]:
         codes.append("final_contains_unread_source")
     return codes, diagnostics
+
+
+def citation_feedback_details(action, diagnostics, read_ids, known_ids):
+    """Reflect only bounded controller-discovered IDs, never arbitrary text."""
+    known_ids = set(known_ids)
+
+    def bounded_ids(values):
+        return sorted({sid for sid in values if sid in known_ids
+                       and len(sid) <= CITATION_FEEDBACK_ID_MAX_CHARACTERS})[:CITATION_FEEDBACK_ID_LIMIT]
+
+    result, omitted = {}, {}
+    for key in ("unread_declared_citation_ids", "declared_citation_ids_missing_from_text", "unread_source_ids_in_text"):
+        values = diagnostics[key]
+        result[key] = bounded_ids(values)
+        omitted[key] = len(values) - len(result[key])
+    unread = (set(diagnostics["unread_declared_citation_ids"])
+              | set(diagnostics["unread_source_ids_in_text"])) - set(read_ids)
+    result["unread_but_discovered_source_ids"] = bounded_ids(unread)
+    result["declared_citation_ids"] = bounded_ids(action["cited_source_ids"])
+    result["unrecognized_declared_citation_count"] = len(set(action["cited_source_ids"]) - known_ids)
+    result["omitted_citation_diagnostic_counts"] = omitted
+    return result
 
 
 def public_question(root, case_id, destination):
@@ -289,6 +407,9 @@ def plan(root, args, *, runner=None, command=None):
         raise PlanningValidationError("run_directory_not_empty", "Planning run directory must be empty")
     gate = benchmark.KnowledgeGate(args.workbench_url)
     question = public_question(root, args.case, destination)
+    (destination / "model-instructions.txt").write_text(INSTRUCTIONS, encoding="utf-8")
+    core.dump_json(destination / "knowledge-tools.json", benchmark.weak_tools())
+    core.dump_json(destination / "action-schema.json", ACTION_SCHEMA)
     history, knowledge_calls, read_ids, counts = [], [], set(), Counter()
     repair_feedback = None
     phase = "initialization"
@@ -298,11 +419,21 @@ def plan(root, args, *, runner=None, command=None):
               "requested_effort": args.effort, "reported_models": [],
               "model_identity_verification": "requested_exactly_cli_does_not_report_model",
               "max_rounds": args.max_rounds, "round_timeout_seconds": args.timeout,
+              "planning_policy_version": PLANNING_POLICY_VERSION,
+              "research_policy_version": RESEARCH_POLICY_VERSION,
+              "common_planning_policy_sha256": text_sha256(COMMON_PLANNING_POLICY),
+              "research_policy_sha256": text_sha256(RESEARCH_POLICY),
+              "instructions_path": "model-instructions.txt", "instructions_sha256": text_sha256(INSTRUCTIONS),
+              "tool_schema_path": "knowledge-tools.json", "tool_schema_sha256": core.sha256(destination / "knowledge-tools.json"),
+              "action_schema_path": "action-schema.json", "action_schema_sha256": core.sha256(destination / "action-schema.json"),
+              "input_packet_sha256": text_sha256(json.dumps(question, ensure_ascii=False)),
+              "prepared_question_sha256": core.sha256(destination / "question.json"),
               "runner_injected": backend.runner_injected, "library_ids": sorted(gate.fixed_ids),
               "knowledge_calls": knowledge_calls, "model_execution_audit": backend.records,
               "private_reference_supplied": False, "thought_chain_stored": False,
               "raw_cli_logs_stored": False, "solver_run": False, "numerical_validation": "not_run",
               "rejected_candidates": [], "citation_repair_limit": 1, "citation_repair_count": 0,
+              "action_normalizations": [],
               "isolation_policy": {"evaluation_set_retrieval_enabled": False,
                                    "user_config_loaded": False, "cli_native_tools_allowed": False},
               "isolation_checks": "before_each_model_round_and_knowledge_call"}
@@ -346,17 +477,28 @@ def plan(root, args, *, runner=None, command=None):
                         "read_source_ids": sorted(read_ids), "tool_history": history}
             if repair_feedback is not None:
                 envelope["citation_repair"] = repair_feedback
+            prompt = json.dumps(envelope, ensure_ascii=False)
+            if number == 1:
+                (destination / "model-input.json").write_text(prompt, encoding="utf-8")
+                report.update(model_input_path="model-input.json", model_input_sha256=text_sha256(prompt))
             phase = "model_generation"
-            action = backend.generate(json.dumps(envelope, ensure_ascii=False), number)
+            action = backend.generate(prompt, number)
             checkpoint()
             phase = "action_validation"
+            normalization_flags = []
             try:
-                calls = validate_action(action)
+                calls = validate_action(action, normalization_flags=normalization_flags)
             except PlanningValidationError as exc:
+                report["action_validation_failure"] = {
+                    "round": number, "code": exc.code,
+                    "detail_code": exc.detail_code,
+                    "shape": action_shape_summary(action),
+                }
                 retain_rejected(action, number, [exc.code])
                 raise
-            if repair_feedback is not None and calls is not None:
-                raise PlanningValidationError("citation_repair_requires_final", "Citation repair must return a final action")
+            finally:
+                if normalization_flags:
+                    report["action_normalizations"].append({"round": number, "flags": normalization_flags})
             if calls is None:
                 citations = set(action["cited_source_ids"])
                 content = action["plan_markdown"].strip()
@@ -369,13 +511,18 @@ def plan(root, args, *, runner=None, command=None):
                     codes.insert(0, "first_action_not_search")
                 if codes:
                     retain_rejected(action, number, codes, diagnostics)
-                    if (set(codes) <= CITATION_FAILURE_CODES and read_ids
+                    if (set(codes) <= CITATION_FAILURE_CODES
                             and report["citation_repair_count"] < report["citation_repair_limit"]
                             and number < args.max_rounds):
                         report["citation_repair_count"] += 1
                         repair_feedback = {"failure_codes": codes, "read_source_ids": sorted(read_ids),
-                            "rejected_plan_markdown": content, "declared_citation_ids": sorted(citations),
-                            "instructions": "上一份可见方案因来源引用验证失败而被拒绝，未评分。仅允许本次引用修复；返回 action=final，保留完整方案，修订引用为实际读取且正文原样出现的来源ID。不得调用新工具，不提供思维链。控制器未提供任何物理答案或评分参考。"}
+                            "rejected_plan_markdown": content,
+                            **citation_feedback_details(action, diagnostics, read_ids, gate.known),
+                            "instructions": "上一份可见方案因来源引用验证失败而被拒绝，未评分。本次仅反馈可核查的引用错误，没有物理答案或评分参考；允许正常action=tools检索、补读及核对主张，再提交完整action=final。unread_but_discovered_source_ids中的ID已发现但未读，可在原剩余预算内自行read_source核实；未发现的ID须重新检索，不能冒充已读。declared_citation_ids_missing_from_text表示已声明但正文未原样出现。所有调用仍计入原总轮数和检索/读取预算，不增加重采样机会。引用实际支持该主张的已读来源；尚未核实则说明缺口，不仅删引掩盖。不要提供思维链。"}
+                        feedback_path = f"citation-feedback-{number:02}.json"
+                        core.dump_json(destination / feedback_path, repair_feedback)
+                        report["rejected_candidates"][-1]["feedback_path"] = feedback_path
+                        report["citation_feedback_path"] = feedback_path
                         checkpoint()
                         continue
                     raise PlanningValidationError(codes[0], "Final plan must cite actual read_source IDs in its text")

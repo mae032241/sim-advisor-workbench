@@ -38,6 +38,60 @@ class KnowledgeViewTests(unittest.TestCase):
         self.assertNotIn("instructions", result["data"])
         self.assertLess(len(json.dumps(result)), 6500)
 
+    def test_generic_tutorial_heading_keeps_case_identity_and_unverified_scope(self):
+        source = {"id": "tutorial-section", "title": "Notes About the COMSOL Implementation", "kind": "manual",
+                  "type": "case_context", "package": "cs63-documents", "physics": [],
+                  "data": {"tutorial_identity": "models.nsm.parameter_estimation_plasticity",
+                           "canonical_tutorial": {"ordinal": 8, "source_sha256": "hash"},
+                           "section": "Notes About the COMSOL Implementation", "status": "documented",
+                           "model_agreement": "not_verified"}}
+        before = copy.deepcopy(source)
+        result = candidate_view(source)
+        context = result["source_context"]
+        self.assertEqual(context["role"], "case_tutorial")
+        self.assertEqual(context["case_identity"], source["data"]["tutorial_identity"])
+        self.assertEqual(context["case_name"], "parameter_estimation_plasticity")
+        self.assertEqual(context["package"], "models.nsm")
+        self.assertEqual(context["model_agreement"], "not_verified")
+        self.assertEqual(context["applicability"], "not_verified")
+        self.assertNotIn("physics", context)
+        self.assertNotIn("feature_branch", context)
+        self.assertEqual(result["package"], "cs63-documents")
+        self.assertEqual(source, before)
+
+    def test_saved_api_and_general_manual_roles_do_not_claim_effective_configuration(self):
+        for type_, role in (("saved_configuration", "saved_configuration"), ("api_configuration", "api_observation")):
+            source = {"type": type_, "kind": "case", "asset_key": "models:Examples/shielding.mph",
+                      "package": "acdc-models", "physics": [],
+                      "data": {"feature_branch": "physics", "feature_type": "CurrentConservation",
+                               "effective_activation": "not_evaluated", "execution_status": "not_run"}}
+            context = candidate_view(source)["source_context"]
+            self.assertEqual(context["role"], role)
+            self.assertEqual(context["case_identity"], source["asset_key"])
+            self.assertEqual(context["case_name"], "shielding")
+            self.assertEqual(context["feature_branch"], "physics")
+            self.assertEqual(context["effective_activation"], "not_evaluated")
+            self.assertEqual(context["execution_status"], "not_run")
+            self.assertNotIn("physics", context)
+        manual = candidate_view({"kind": "manual", "type": "manual_topic", "title": "Current Conservation"})
+        self.assertEqual(manual["source_context"]["role"], "general_manual")
+        self.assertNotIn("case_identity", manual["source_context"])
+
+    def test_source_context_is_allowlisted_bounded_and_cannot_copy_nested_bodies(self):
+        body = "BODY_SENTINEL" * 10000
+        source = {"type": "method_step", "kind": "manual", "text": body, "data": {
+            "tutorial_identity": "models.test." + "case" * 10000, "canonical_tutorial": {"text": body},
+            "feature_branch": {"nodes": [body]}, "section": "S" * 10000,
+            "status": [body], "instructions": [body], "model_snapshot": {"nodes": [body]}},
+            "physics": ["Known interface " + "x" * 10000] * 1000}
+        context = candidate_view(source)["source_context"]
+        self.assertLess(len(json.dumps(context)), 1700)
+        self.assertNotIn("BODY_SENTINEL", json.dumps(context))
+        self.assertEqual(len(context["physics"]), 6)
+        self.assertNotIn("feature_branch", context)
+        self.assertNotIn("status", context)
+        self.assertNotIn("canonical_tutorial", context)
+
     def test_related_filter_keeps_alignment_and_unresolved_hints_without_bodies(self):
         values = [{"id": "lo-tutorial", "relation": "documented_by", "status": "candidate_same_branch", "alignment": "not_verified", "text": "body", "data": {"code": "raw"}},
             {"title": "unknown-function", "relation": "requires", "status": "unresolved", "path": "private"}]
@@ -60,7 +114,7 @@ class KnowledgeViewTests(unittest.TestCase):
         self.assertEqual(closed["id"], source["id"])
         self.assertEqual(closed["revision_id"], source["revision_id"])
         self.assertFalse(closed["availability"]["readable"])
-        self.assertFalse({"text", "excerpt", "data", "coverage"} & set(closed))
+        self.assertFalse({"text", "excerpt", "data", "coverage", "source_context"} & set(closed))
         self.assertNotIn("BODY_SENTINEL", json.dumps(closed))
         self.assertEqual(source, before)
 

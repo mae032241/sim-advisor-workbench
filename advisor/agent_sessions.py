@@ -16,6 +16,7 @@ from .runtime_adapters import (get_runtime_factory,runtime_command,MANAGED_BACKE
 from .sessions import ConflictError, now, write_json
 from .external_agents import ExternalAgentBridge
 from .workspace_paths import WorkspacePaths
+from .research_policy import load_planner_instructions
 
 
 
@@ -25,7 +26,7 @@ from .workspace_paths import WorkspacePaths
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "comsol_planner.v1.txt"
-INSTRUCTIONS = PROMPT_PATH.read_text(encoding="utf-8")
+INSTRUCTIONS = load_planner_instructions(PROMPT_PATH)
 _UNSET = object()
 
 
