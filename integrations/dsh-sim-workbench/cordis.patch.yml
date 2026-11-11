@@ -1,0 +1,4 @@
+- insert:
+    - id: sim-advisor-workbench
+      name: '@local/sim-advisor-workbench'
+      config: {}

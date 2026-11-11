@@ -1,0 +1,62 @@
+{
+  "origin": "DSH 0.2.2-rc.1 installed official runtime; exact original bytes",
+  "files": [
+    {
+      "path": "node_modules/@deepseek-ai/schemastery/lib/index.mjs",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/schemastery/lib/index.mjs",
+      "package": "@deepseek-ai/schemastery",
+      "version": "3.19.0",
+      "bytes": 22988,
+      "sha256": "cfcbe46c7416bdb35ce891c252152bbf519e08199bede5930dd7cb880c65f1ef"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/schemastery/lib/index.cjs",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/schemastery/lib/index.cjs",
+      "package": "@deepseek-ai/schemastery",
+      "version": "3.19.0",
+      "bytes": 23821,
+      "sha256": "aca1c1a47c7b6034feee01501aefca3e6dd97a0bac4fe334fd30647ae5a9e480"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/schemastery/package.json",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/schemastery/package.json",
+      "package": "@deepseek-ai/schemastery",
+      "version": "3.19.0",
+      "bytes": 932,
+      "sha256": "b56f354704ff6e65c8a0c2639f0d46dffa74aaeef9c12e83d47d60f19021112b"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/schemastery/LICENSE",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/schemastery/LICENSE",
+      "package": "@deepseek-ai/schemastery",
+      "version": "3.19.0",
+      "bytes": 1071,
+      "sha256": "034fb52b1d57360ecbae6cb1632a88f86fd7c3d3f5631a5f082710203dda0be7"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/cosmokit/lib/index.js",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/cosmokit/lib/index.js",
+      "package": "@deepseek-ai/cosmokit",
+      "version": "1.9.0",
+      "bytes": 17160,
+      "sha256": "ba44c0871656e4c7cac2c3c8a2ff644e0d2eb9d6bda7f6355866d686d513268e"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/cosmokit/package.json",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/cosmokit/package.json",
+      "package": "@deepseek-ai/cosmokit",
+      "version": "1.9.0",
+      "bytes": 739,
+      "sha256": "7825705f990d7b54c6d1216da86eaf8c6a795274834be83dc0d976bbd929f9da"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/cosmokit/LICENSE",
+      "source": "app.asar/dsh/node_modules/@deepseek-ai/cosmokit/LICENSE",
+      "package": "@deepseek-ai/cosmokit",
+      "version": "1.9.0",
+      "bytes": 1071,
+      "sha256": "034fb52b1d57360ecbae6cb1632a88f86fd7c3d3f5631a5f082710203dda0be7"
+    }
+  ],
+  "runtime_dependencies": "schemastery -> cosmokit; @standard-schema/spec is type-only and absent from emitted runtime imports"
+}

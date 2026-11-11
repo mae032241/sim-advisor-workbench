@@ -1,0 +1,4 @@
+# Optional backend-independent stdio bridge; installed locally, never globally.
+# The bridge is verified with mcp 1.29.1. SDK 2.x changes low-level APIs.
+mcp>=1.29.1,<2
+httpx>=0.28,<1

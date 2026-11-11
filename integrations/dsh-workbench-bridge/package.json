@@ -1,0 +1,12 @@
+{
+  "name": "@local/sim-advisor-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Connect this DSH conversation to a local simulation workbench.",
+  "exports": { ".": "./index.js", "./locale/*.json": "./locale/*.json", "./icon": "./icon.svg" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "files": ["index.js", "http.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md"],
+  "scripts": { "test": "node --test test/*.test.js" },
+  "engines": { "node": ">=24.9.0" }
+}

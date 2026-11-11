@@ -1,0 +1,2 @@
+# Preserve exact bytes: packaged resources and vendored files are hash-checked.
+* -text

@@ -1,0 +1,56 @@
+.model-env/
+.retrieval-env/
+.tools/
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.test-temp/
+.test-tmp-*/
+
+# Local environments, build outputs and temporary experiments.
+.venv/
+venv/
+/dist/
+/tmp*/
+/pytest-*/
+node_modules/
+integrations/**/service-test-*/
+integrations/**/host-test-*/
+integrations/**/offline-test-*/
+/scripts/mph_extract/.*/
+/scripts/mph_extract/.*.json
+*.class
+/benchmarks/*/packages/
+# Prepared run inputs are byte-for-byte copies of tracked public cases.
+/benchmarks/*/runs/*/*/inputs/
+/benchmarks/*/runs/*/*/problem.md
+*.log
+*.tmp
+*.bak
+
+# User documents/models, indexes, offline runtimes and model weights.
+*.mph
+*.stp
+*.step
+*.gguf
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+
+# Local credentials and machine-specific settings; examples may be tracked.
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+.DS_Store
+Thumbs.db
+
+# This small audited dependency closure is source distributed with the plugin.
+!/integrations/dsh-sim-workbench/vendor/node_modules/
+!/integrations/dsh-sim-workbench/vendor/node_modules/**

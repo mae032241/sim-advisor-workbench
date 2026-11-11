@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#153737">
+  <meta name="description" content="本地 COMSOL 仿真工作台：从 STEP 几何与目标出发，由 Agent 设计物理方案、检索依据并确认建模意图。">
+  <title>Simulation Advisor · 仿真方案工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/library-panel.css">
+  <link rel="stylesheet" href="/workflow.css">
+  <link rel="stylesheet" href="/agent-panel.css">
+  <script src="/library-panel.js" defer></script>
+  <script src="/agent-panel.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳至工作区</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="工作台导航">
+      <a class="brand" href="/" aria-label="Simulation Advisor 首页">
+        <span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 3 31 10.5v15L18 33 5 25.5v-15L18 3Z" stroke="currentColor" stroke-width="1.4"/><path d="m5 10.5 13 7.7 13-7.7M18 18.2V33M11.5 6.8v15L24.5 29M24.5 6.8v15l-13 7.2" stroke="currentColor" stroke-width="1.2"/></svg></span>
+        <span>Simulation<span class="brand-secondary">Advisor</span></span>
+      </a>
+      <div class="workspace-label">COMSOL 仿真工作台 <span>LOCAL</span></div>
+      <button class="new-session-button" id="new-session" type="button"><span aria-hidden="true">＋</span> 新建仿真任务</button>
+      <nav class="side-nav" aria-label="工作区">
+        <button class="side-nav-link active" id="open-workspace" type="button" aria-current="page" aria-controls="plan-workspace"><span aria-hidden="true">▤</span> 方案工作区</button>
+        <button class="side-nav-link" id="open-plan-management" type="button" aria-controls="plan-management"><span aria-hidden="true">▦</span> 方案管理</button>
+        <button class="side-nav-link" id="open-search" type="button"><span aria-hidden="true">⌕</span> 文档与案例检索</button>
+        <button class="side-nav-link" id="open-libraries" type="button" aria-controls="library-management"><span aria-hidden="true">▤</span> 资料库管理</button>
+      </nav>
+      <div class="sidebar-section-label"><span id="session-history-title">最近方案</span><button id="refresh-history" class="quiet-icon" type="button" aria-label="刷新方案历史" title="刷新方案历史">↻</button></div>
+      <div id="session-list" class="session-list"><p class="side-empty">正在读取本地历史…</p></div>
+      <div class="sidebar-bottom">
+        <div class="local-label"><span class="status-dot" id="server-dot"></span><span id="server-status">正在连接本地服务</span></div>
+        <p>模型与方案保存在本地</p>
+        <button id="open-system" class="system-toggle" type="button">引擎与知识库状态 <span aria-hidden="true">↗</span></button>
+      </div>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>工作空间</span><span aria-hidden="true">/</span><strong id="workspace-name">方案工作区</strong></div>
+        <div class="topbar-right"><nav class="mobile-view-nav" aria-label="主视图"><button id="open-workspace-mobile" class="mobile-library-button" type="button" aria-current="page" aria-controls="plan-workspace">方案</button><button id="open-plan-management-mobile" class="mobile-library-button" type="button" aria-controls="plan-management">管理</button><button id="open-libraries-mobile" class="mobile-library-button" type="button" aria-controls="library-management">资料库</button></nav><span class="local-pill"><span></span> 本地原型</span><button id="system-shortcut" class="avatar-button" type="button" aria-label="查看服务状态">SA</button></div>
+      </header>
+      <main id="main" tabindex="-1">
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+        <section id="plan-workspace" class="plan-workspace" aria-label="方案工作区">
+        <div class="page-heading">
+          <div><p class="eyebrow">GEOMETRY → PHYSICS → PLAN</p><h1>从几何与目标，开始设计仿真。</h1><p class="page-description">上传 STEP 几何，让 Agent 研究物理场、材料与工况，再一起确认建模方案。</p></div>
+          <span class="prototype-label"><span aria-hidden="true">◈</span> COMSOL Simulation Advisor</span>
+        </div>
+
+        <details class="task-inputs" id="task-inputs" open>
+          <summary><span>输入与目标</span><span class="input-toggle-note">查看需求、模型与解析结果</span></summary>
+        <section class="intake-grid" id="intake" aria-label="目标与模型输入">
+          <form class="panel intake-panel" id="intake-form">
+            <div class="panel-heading"><div><span class="section-number">01</span><h2>定义仿真任务</h2></div><span class="small-label">从你的目标开始</span></div>
+            <label class="field-label" for="goal">你希望通过仿真解决什么问题？</label>
+            <textarea id="goal" name="goal" rows="4" placeholder="例如：我有一个零件的 STEP 几何，想评估加热时的温度分布与变形。请先分析需要哪些物理场、材料参数和边界条件。" required></textarea>
+            <div class="examples-row"><span>试用本地案例</span><div id="example-list" class="example-list"><span class="muted">正在读取…</span></div></div>
+            <div class="field-label model-label"><label for="model-path">几何文件或已有仿真模型</label><span>.stp / .step / .mph</span></div>
+            <div class="path-row"><input id="model-path" name="model-path" type="text" spellcheck="false" placeholder="D:\geometry\your_part.step" autocomplete="off"><button id="inspect-model" class="button button-subtle" type="button">读取</button></div>
+            <div class="upload-row"><label for="model-file" class="upload-label"><span aria-hidden="true">↑</span> 选择 STEP / MPH 文件</label><input id="model-file" class="visually-hidden" type="file" accept=".stp,.step,.mph"><span id="file-name" class="muted">或填写本机文件路径</span></div>
+            <p class="geometry-intake-help">STEP 提供几何形状；物理场、材料和工况将在后续规划中定义。</p>
+            <div class="intake-footer"><p><span aria-hidden="true">⌁</span> 只读解析，保留原始文件</p><button id="create-session" class="button button-primary" type="submit"><span>建立仿真任务</span><span aria-hidden="true">→</span></button></div>
+          </form>
+
+          <section class="panel model-panel" aria-labelledby="model-heading" aria-busy="false" id="model-panel">
+            <div class="panel-heading"><div><span class="section-number">02</span><h2 id="model-heading">输入概览</h2></div><span id="model-badge" class="badge badge-neutral">等待读取</span></div>
+            <div id="model-content" class="model-content">
+              <div class="model-empty"><div class="mesh-art" aria-hidden="true"><svg viewBox="0 0 180 140" fill="none"><path d="m30 45 60-30 60 30v50l-60 30-60-30V45Z" stroke="currentColor"/><path d="m30 45 60 30 60-30M90 75v50M50 35l60 30v50M70 25l60 30v50M30 62l60 30 60-30M30 79l60 30 60-30M50 105V55l60-30M70 115V65l60-30" stroke="currentColor" stroke-opacity=".5"/></svg></div><h3>从你的几何开始</h3><p>读取 STEP 后展示几何事实，<br>再由 Agent 研究需要建立的物理模型。</p><span class="empty-caption">.stp / .step 几何 · 也支持已有 .mph 模型</span></div>
+            </div>
+          </section>
+        </section>
+        </details>
+
+        <section class="panel workbench" id="workbench" aria-labelledby="plan-heading" hidden>
+          <div class="workbench-header"><div><p class="eyebrow">SIMULATION WORKFLOW</p><h2 id="plan-heading">仿真任务</h2><div class="session-meta"><span id="session-status" class="badge"></span><span id="revision-label"></span></div></div><div class="export-actions"><button id="open-versions" class="button button-subtle versions-open" type="button">方案版本</button><button id="refine-plan" class="button button-primary agent-plan-action" type="button" disabled>Agent 规划方案 <span aria-hidden="true">✧</span></button><details class="session-record-details"><summary>版本与导出</summary><div class="record-actions"><span id="plan-engine"></span><button id="analyze-simplification" class="button button-subtle simplification-action" type="button" disabled>补充简化分析</button><a id="export-markdown" class="button button-subtle" href="#" download>导出 Markdown <span aria-hidden="true">↓</span></a><a id="export-json" class="button button-ghost" href="#" download>JSON</a><button id="delete-current-session" class="button button-ghost session-current-delete" type="button" disabled>删除方案</button></div></details></div></div>
+          <div class="plan-disclaimer">方案用于建模规划，求解与物理验证尚未执行。</div>
+          <section id="agent-panel" hidden></section>
+          <div id="planning-state" class="planning-state" hidden></div>
+          <div class="tabs" role="tablist" aria-label="方案详情"><button id="tab-plan" class="tab active" role="tab" aria-selected="true" aria-controls="view-plan" type="button" data-tab="plan">仿真流程</button><button id="tab-intent" class="tab" role="tab" aria-selected="false" aria-controls="view-intent" tabindex="-1" type="button" data-tab="intent">待确认 <span id="question-count" class="tab-count">0</span></button><button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history">版本记录</button></div>
+          <section id="view-plan" class="tab-view" role="tabpanel" aria-labelledby="tab-plan"><div class="plan-layout"><div id="plan-content"></div><details class="disclosure-section evidence-column"><summary><span id="evidence-heading">引用资料</span><span id="source-count" class="small-label"></span></summary><div class="disclosure-body"><p class="evidence-help">打开来源，核对适用章节与版本。</p><div id="source-list" class="source-list"></div><button id="search-more" class="text-button" type="button">检索更多文档 <span aria-hidden="true">↗</span></button></div></details></div></section>
+          <section id="view-intent" class="tab-view" role="tabpanel" aria-labelledby="tab-intent" hidden><div class="intent-intro"><div><h3>把关键选择说清楚</h3><p>问题由 Agent 结合目标与几何提出。明确关键选择；涉及工况或路线的调整，需要更新方案后再确认。</p></div><span class="badge badge-neutral" id="intent-progress"></span></div><form id="intent-form"><div id="question-list" class="question-list"></div><div class="confirmation-bar"><div><strong id="confirmation-title">等待确认</strong><p id="confirmation-detail">先由 Agent 规划方案，并明确关键意图。</p></div><div class="confirmation-actions"><button id="save-answers" class="button button-subtle" type="submit">保存回答</button><button id="confirm-session" class="button button-primary" type="button" disabled>确认当前方案 <span aria-hidden="true">✓</span></button></div></div></form></section>
+          <section id="view-history" class="tab-view" role="tabpanel" aria-labelledby="tab-history" hidden><div class="history-intro"><h3>方案版本与操作记录</h3><p>查看已保存的完整快照；恢复历史内容会创建新修订，当前版本号不会回退。</p><button id="refresh-versions" class="text-button" type="button">刷新版本列表</button></div><p id="history-status" class="muted" role="status"></p><ol id="history-list" class="history-list"></ol><details class="disclosure-section"><summary>完整操作记录</summary><ol id="history-operations" class="history-list"></ol></details></section>
+        </section>
+
+        <section id="how-it-works" class="workflow-note" aria-label="工作流程"><div><span class="workflow-dot">1</span><div><h3>读取几何与目标</h3><p>STEP 几何或已有仿真模型</p></div></div><span class="workflow-line" aria-hidden="true"></span><div><span class="workflow-dot">2</span><div><h3>Agent 研究方案</h3><p>设计物理模型并查阅真实依据</p></div></div><span class="workflow-line" aria-hidden="true"></span><div><span class="workflow-dot">3</span><div><h3>确认建模意图</h3><p>补齐工况，迭代并保留版本</p></div></div></section>
+        </section>
+        <section id="plan-management" class="plan-management" aria-labelledby="plan-management-heading" hidden>
+          <div class="page-heading"><div><p class="eyebrow">SAVED SIMULATION PLANS</p><h1 id="plan-management-heading">方案管理</h1><p class="page-description">浏览已保存的方案，或恢复、彻底删除已移入回收区的方案。</p></div><button id="management-new-session" class="button button-primary" type="button">新建方案</button></div>
+          <section class="panel plan-manager-panel" aria-label="本地方案列表">
+            <div class="plan-manager-toolbar"><div class="plan-manager-tabs" role="tablist" aria-label="方案列表"><button id="sessions-active-tab" class="plan-manager-tab active" role="tab" aria-selected="true" aria-controls="managed-sessions-panel" type="button">已保存方案</button><button id="toggle-deleted-sessions" class="plan-manager-tab" role="tab" aria-selected="false" aria-controls="managed-sessions-panel" tabindex="-1" type="button">已删除方案</button></div><button id="refresh-managed-sessions" class="button button-subtle" type="button">刷新列表</button></div>
+            <div class="plan-manager-search"><label class="field-label" for="managed-session-search">搜索当前列表</label><input id="managed-session-search" type="search" autocomplete="off" placeholder="输入方案名称或编号"><p id="managed-session-search-hint" class="muted">搜索已载入的方案；可继续载入更多。</p></div>
+            <section id="managed-sessions-panel" role="tabpanel" aria-labelledby="sessions-active-tab"><p id="managed-sessions-status" class="muted" role="status" aria-live="polite"></p><p id="managed-sessions-error" class="source-error" role="alert" hidden></p><div id="managed-session-list" class="managed-session-list"></div><div class="plan-manager-load-more"><button id="load-more-sessions" class="button button-subtle" type="button" hidden>载入更多方案</button></div></section>
+          </section>
+        </section>
+        <section id="library-management" aria-label="资料库管理" hidden></section>
+        <footer class="page-footer"><span>SIMULATION ADVISOR <span class="footer-divider">/</span> LOCAL RESEARCH PROTOTYPE</span><span>有据可查，审慎建模。</span></footer>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="session-delete-dialog" class="modal session-delete-modal" aria-labelledby="session-delete-title"><div class="modal-header"><h2 id="session-delete-title">删除方案</h2></div><div class="modal-body"><p id="session-delete-name" class="session-delete-name"></p><p>方案将移入已删除列表，可恢复。原始模型、资料库、对话记录与已导出文件保持不变。</p><p id="session-delete-unsaved"></p><p class="muted">若 Agent 仍连接，请先在对话面板断开后再删除；不会自动停止外部 DSH。</p><p id="session-delete-error" class="source-error" role="alert"></p><div class="session-delete-actions"><button id="cancel-session-delete" class="button button-subtle" type="button" autofocus>取消</button><button id="confirm-session-delete" class="button session-current-delete" type="button" disabled>确认删除</button></div></div></dialog>
+
+  <dialog id="session-purge-dialog" class="modal session-delete-modal" aria-labelledby="session-purge-title"><div class="modal-header"><h2 id="session-purge-title">彻底删除方案</h2></div><div class="modal-body"><p id="session-purge-name" class="session-delete-name"></p><p>此操作无法撤销，将永久删除该方案及其所有方案版本快照，之后无法恢复。</p><p class="muted">原始模型、资料库、Agent 对话记录与已导出文件继续保留。</p><p id="session-purge-error" class="source-error" role="alert"></p><div class="session-delete-actions"><button id="cancel-session-purge" class="button button-subtle" type="button" autofocus>取消</button><button id="confirm-session-purge" class="button session-current-delete" type="button" disabled>确认彻底删除</button></div></div></dialog>
+
+  <dialog id="versions-dialog" class="modal versions-modal" aria-labelledby="versions-title"><div class="modal-header"><div><p class="eyebrow">PLAN VERSIONS · READ ONLY</p><h2 id="versions-title">方案版本</h2></div><button class="close-button" type="button" data-close="versions-dialog" aria-label="关闭方案版本">×</button></div><div class="modal-body"><p id="versions-status" class="muted" role="status"></p><button id="reload-version-list" class="text-button" type="button">刷新版本列表</button><div class="version-browser"><nav aria-label="选择方案版本"><ol id="versions-list" class="version-list"></ol></nav><section id="version-preview" class="version-preview" aria-label="历史方案只读预览"><p class="inline-empty">选择一个有快照的版本查看完整方案。</p></section></div><div class="version-restore-controls"><button id="restore-version" class="button button-subtle" type="button" disabled>以此版本创建新修订</button><p id="version-restore-hint" class="muted"></p><section id="version-restore-confirmation" class="version-restore-confirmation" hidden><p id="version-restore-detail"></p><div class="session-delete-actions"><button id="cancel-version-restore" class="button button-subtle" type="button">取消</button><button id="confirm-version-restore" class="button button-primary" type="button">确认创建新修订</button></div></section><p id="version-error" class="source-error" role="alert"></p></div></div></dialog>
+
+  <dialog id="system-dialog" class="modal system-modal" aria-labelledby="system-title"><div class="modal-header"><div><p class="eyebrow">LOCAL INFRASTRUCTURE</p><h2 id="system-title">引擎与知识库</h2></div><button class="close-button" type="button" data-close="system-dialog" aria-label="关闭引擎状态">×</button></div><div class="modal-body"><p class="modal-description">组件安装、资料库索引与当前方案的 Agent 连接分别报告；一种模式未就绪不代表其他模式不可用。</p><div id="service-list" class="service-list"></div><details class="corpus-block system-legacy"><summary>旧版整手册索引（可选）</summary><p class="service-detail">以下为旧版整手册读取与索引状态。注册资料库的构建进度和检索模式请查看“资料库管理”。</p><div class="evidence-heading"><h3>整手册索引</h3><button id="build-index" class="button button-subtle" type="button">构建 / 更新旧版索引</button></div><div id="corpus-status"></div><div id="index-progress" class="index-progress" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span id="index-progress-text">正在索引本地文档…</span></div></details><button id="refresh-status" class="text-button" type="button">刷新服务状态 ↻</button></div></dialog>
+
+  <dialog id="search-dialog" class="modal search-modal" aria-labelledby="search-title"><div class="modal-header"><div><p class="eyebrow">KNOWLEDGE EXPLORER</p><h2 id="search-title">文档与案例检索</h2></div><button class="close-button" type="button" data-close="search-dialog" aria-label="关闭检索">×</button></div><div class="modal-body"><form id="search-form" class="search-form"><label class="visually-hidden" for="search-query">检索内容</label><input id="search-query" type="search" placeholder="搜索物理场、网格方法、求解设置…" required><label class="visually-hidden" for="search-kind">来源类型</label><select id="search-kind"><option value="all">全部来源</option><option value="manual">官方手册</option><option value="case">应用案例</option><option value="code">代码示例</option></select><label class="visually-hidden" for="search-feature-branch">建模分支（可选）</label><select id="search-feature-branch"><option value="">所有建模分支</option><option value="geometry">几何 · geometry</option><option value="mesh">网格 · mesh</option><option value="physics">物理场 · physics</option><option value="material">材料 · material</option><option value="multiphysics">多物理耦合 · multiphysics</option><option value="selection">选择集 · selection</option><option value="study">研究 · study</option><option value="solver">求解器 · solver</option><option value="result">结果 · result</option><option value="param">参数 · param</option><option value="func">函数 · func</option><option value="variable">变量 · variable</option><option value="misc">其他 · misc</option></select><button id="search-submit" class="button button-primary" type="submit">检索</button></form><p id="search-status" class="muted" role="status">搜索实际索引中的文档；打开结果可核对原文。建模分支筛选用于有分类信息的结构化资料；检索完整手册可选择“所有建模分支”。</p><div id="search-results" class="search-results"></div></div></dialog>
+
+  <dialog id="source-dialog" class="modal source-modal" aria-labelledby="source-title"><div class="modal-header"><div><p class="eyebrow">SOURCE PREVIEW</p><h2 id="source-title">文档原文</h2></div><button class="close-button" type="button" data-close="source-dialog" aria-label="关闭文档预览">×</button></div><div class="modal-body"><div id="source-meta" class="source-meta"></div><a id="source-official-link" class="text-button" target="_blank" rel="noopener noreferrer" hidden>在官方文档中打开 ↗</a><div id="source-body" class="document-text"></div><section id="source-related" class="source-related" aria-label="关联来源" hidden></section><details id="source-technical" class="disclosure-section source-technical" hidden><summary>来源与提取覆盖详情</summary><div id="source-technical-body" class="document-text"></div></details></div></dialog>
+  <div id="busy-overlay" class="busy-overlay" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><div><strong id="busy-title">正在处理</strong><p id="busy-detail">请稍候…</p></div></div>
+</body>
+</html>

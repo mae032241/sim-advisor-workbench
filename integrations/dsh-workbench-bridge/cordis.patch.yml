@@ -1,0 +1,4 @@
+- insert:
+    - id: sim-advisor-bridge
+      name: '@local/sim-advisor-bridge'
+      config: {}
