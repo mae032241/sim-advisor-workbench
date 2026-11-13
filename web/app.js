@@ -2,7 +2,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { status: null, session: null, model: null, modelPath: "", operation: null, tab: "plan", workspaceView: "plans", returnSessionId: null, draftAnswers: {}, dirty: false, indexBusy: false, indexResult: null, sourceRequest: 0, statusRequest: 0, sessionRequest: 0, questionGroups: [], overviewNodes: null, agent: null, showDeletedSessions: false, deletedSessions: [], deletedSessionIds: new Set(), restoredSessionIds: new Set(), trashRequest: 0, trashLoading: false, trashError: "", sessionDeletion: null };
+const state = { status: null, session: null, model: null, modelPath: "", operation: null, tab: "intent", workspaceView: "plans", returnSessionId: null, draftAnswers: {}, dirty: false, indexBusy: false, indexResult: null, sourceRequest: 0, statusRequest: 0, sessionRequest: 0, questionGroups: [], overviewNodes: null, agent: null, showDeletedSessions: false, deletedSessions: [], deletedSessionIds: new Set(), restoredSessionIds: new Set(), trashRequest: 0, trashLoading: false, trashError: "", sessionDeletion: null };
 Object.assign(state, { managedSessions: [], managementLoaded: false, managementLoading: false, managementError: "", managementRequest: 0, managementRead: null, managementTotal: 0, managementNextOffset: null, sessionPurge: null });
 let agentPanel = null;
 let statusRead = null;
@@ -133,12 +133,12 @@ async function refreshStatus(quiet = false) {
     if (request !== state.statusRequest) return;
     state.status = result;
     textIfChanged($("server-status"), result.ready ? "本地服务已连接" : "本地服务已连接 · 准备中");
-    setIfChanged($("server-dot"), "className", `status-dot ${result.ready ? "available" : ""}`);
+    setIfChanged($("server-dot"), "className", `status-dot ${result.ready ? "available" : ""}`); if ($("topbar-dot")) setIfChanged($("topbar-dot"), "className", `status-dot ${result.ready ? "available" : ""}`);
     renderExamples(); renderSessions(); renderSystem(); syncRefine();
   } catch (error) {
     if (request !== state.statusRequest) return;
     textIfChanged($("server-status"), "本地服务连接失败");
-    setIfChanged($("server-dot"), "className", "status-dot failed");
+    setIfChanged($("server-dot"), "className", "status-dot failed"); if ($("topbar-dot")) setIfChanged($("topbar-dot"), "className", "status-dot failed");
     if (!state.status) {
       examplesRenderKey = sessionsRenderKey = systemRenderKey = null;
       $("example-list").replaceChildren(el("span", "muted", "服务连接后可读取案例"));
@@ -557,9 +557,11 @@ async function uploadModel(file) {
   });
 }
 
+const sideTabs = ["intent", "agent", "sources", "history"];
 function selectTab(name, focus = false) {
+  if (!sideTabs.includes(name)) name = "intent";
   state.tab = name;
-  ["plan", "intent", "history"].forEach((tab) => {
+  sideTabs.forEach((tab) => {
     const selected = tab === name; $("tab-" + tab).classList.toggle("active", selected); $("tab-" + tab).setAttribute("aria-selected", String(selected)); $("tab-" + tab).tabIndex = selected ? 0 : -1; $("view-" + tab).hidden = !selected;
   });
   if (focus) $("tab-" + name).focus();
@@ -605,7 +607,7 @@ function adoptSession(session, resetTab = false) {
   $("workbench").hidden = false; $("how-it-works").hidden = true;
   if ($("task-inputs")) $("task-inputs").open = false;
   document.body.classList.add("has-session");
-  renderModel(); renderSession(); if (resetTab) selectTab("plan");
+  renderModel(); renderSession(); if (resetTab) selectTab("intent");
   agentPanel?.bindSession();
   if ($("system-dialog").open) renderSystem();
   state.returnSessionId = session.id; syncWorkspaceURL();
@@ -628,7 +630,7 @@ async function restoreSession(id) {
   if (state.deletedSessionIds.has(id) || state.sessionDeletion || state.sessionPurge || state.operation) return;
   if (state.session?.id === id) { setWorkspaceView("plans", {focus: true}); return; }
   if (state.dirty && !window.confirm("当前回答尚未保存。放弃这些修改并恢复所选方案？")) return;
-  await runOperation("restore", "正在恢复方案", "读取服务中保存的方案、回答与版本历史。", async () => { const request = ++state.sessionRequest; const session = await api(`/api/sessions/${encodeURIComponent(id)}`); if (request !== state.sessionRequest || !adoptSession(session, true)) return; setWorkspaceView("plans"); notice(`已恢复本地方案 · r${session.revision}`); $("workbench").scrollIntoView({ behavior: "smooth", block: "start" }); renderSessions(); });
+  await runOperation("restore", "正在恢复方案", "读取服务中保存的方案、回答与版本历史。", async () => { const request = ++state.sessionRequest; const session = await api(`/api/sessions/${encodeURIComponent(id)}`); if (request !== state.sessionRequest || !adoptSession(session, true)) return; setWorkspaceView("plans"); notice(""); $("workbench").scrollIntoView({ behavior: "smooth", block: "start" }); renderSessions(); });
 }
 function clearSessionContext() {
   resetVersions();
@@ -795,47 +797,76 @@ function renderDesignBrief(container, session = state.session, readOnly = false)
 }
 function openPlanDisclosure(id) { const details = $(id); if (!details) return; details.open = true; details.scrollIntoView({ behavior: "smooth", block: "start" }); details.querySelector("summary")?.focus(); }
 function renderOverview(container) {
-  const session = state.session, brief = session?.design_brief || session?.plan?.design_brief || {}, routes = list(brief.candidate_routes), route = routes.find((item) => item.status === "recommended") || routes[0];
-  const section = el("section", "overview-section"), routeCard = el("div", "overview-route"); section.id = "plan-overview";
-  routeCard.append(el("p", "eyebrow", "当前主路线"));
+  const session = state.session, plan = session?.plan || {}, brief = session?.design_brief || plan.design_brief || {}, routes = list(brief.candidate_routes), route = routes.find((item) => item.status === "recommended") || routes[0];
+  const section = el("section", "overview-section"), routeLine = el("div", "overview-route"); section.id = "plan-overview";
   if (route) {
-    routeCard.append(el("h3", "", route.name || "待确认的建模路线"), el("span", `badge ${route.status === "blocked" ? "badge-warn" : "badge-neutral"}`, route.status === "blocked" ? "受阻 · 待补充" : route.status === "recommended" ? "Agent 建议 · 待核对" : "候选 · 待确认"));
-  } else routeCard.append(el("h3", "", "尚未形成建模路线"), el("p", "overview-route-reason", "输入已保存，等待 Agent 研究。"));
-  const status = el("p", "overview-status"), next = el("details", "overview-next"), nextHeading = el("summary", "", "下一步先补充"), nextList = el("ol", "overview-next-list"), note = el("p", "question-group-note"), actions = el("div", "overview-actions");
-  next.append(nextHeading, nextList, note);
-  const questions = el("button", "button button-subtle", "查看全部问题"); questions.type = "button"; questions.addEventListener("click", () => selectTab("intent", true));
-  const compare = el("button", "text-button", "路线比较与说明"); compare.type = "button"; compare.addEventListener("click", () => openPlanDisclosure("plan-design-details")); actions.append(questions, compare);
-  next.append(actions);
-  section.append(routeCard, status, next); container.append(section); state.overviewNodes = { status, nextHeading, nextList, note, questions }; syncOverview();
+    routeLine.append(el("h3", "", route.name || "待确认的建模路线"), el("span", `badge ${route.status === "blocked" ? "badge-warn" : "badge-neutral"}`, route.status === "blocked" ? "受阻 · 待补充" : route.status === "recommended" ? "Agent 推荐 · 待核对" : "候选 · 待确认"));
+    const others = routes.filter((item) => item !== route);
+    if (others.length) { const compare = el("button", "text-button", `另有 ${others.length} 条备选路线`); compare.type = "button"; compare.addEventListener("click", () => openPlanDisclosure("plan-design-details")); routeLine.append(compare); }
+  } else routeLine.append(el("h3", "", hasAgentPlan() ? "建模路线未注明" : "尚未形成建模路线"));
+  section.append(routeLine);
+  if (isNonBlank(plan.summary) && hasAgentPlan()) section.append(el("p", "plan-summary", plan.summary));
+  else if (!hasAgentPlan()) section.append(el("p", "plan-summary", "目标与输入已保存。点击「Agent 规划方案」，Agent 会比较建模路线、查阅资料，并列出需要你确认的问题。"));
+  const facts = el("dl", "overview-facts");
+  const fact = (label, value) => { if (!isNonBlank(value)) return; const item = el("div"); item.append(el("dt", "", label), el("dd", "", valueText(value))); facts.append(item); };
+  fact("目标", brief.objective); fact("物理场", list(route?.physics).join(" · "));
+  fact("几何", session?.model ? (session.model.name || session.model.path || "").split(/[\\/]/).pop() : "");
+  if (hasAgentPlan()) fact("依据", list(session?.sources).length ? `${list(session.sources).length} 个来源` : "暂无引用来源");
+  if (facts.childElementCount) section.append(facts);
+  container.append(section); state.overviewNodes = {}; syncOverview();
 }
-function syncOverview() {
-  const nodes = state.overviewNodes; if (!nodes || !state.session) return;
-  const information = unresolvedQuestions(false), decisions = unresolvedQuestions(true), status = [];
-  if (state.dirty) status.push("回答尚未保存");
-  if (information.length) status.push(`${information.length} 项资料待明确`);
-  if (decisions.length) status.push(`${decisions.length} 项选择待确认`);
-  if (state.session.planning_incomplete) status.push(hasMethodEvidenceGaps() ? "方法依据待补查" : "研究尚未完成");
-  if (state.session.plan_stale && hasAgentPlan()) status.push("流程待更新");
-  if (state.session.status === "confirmed" && !state.dirty) status.push("当前版本已确认");
-  nodes.status.textContent = status.join(" · ") || (!hasAgentPlan() ? "等待首次规划" : "请核对路线与完整内容，再确认当前版本");
-  nodes.nextList.replaceChildren();
-  information.slice(0, 3).forEach((question, index) => { const item = el("li"), button = el("button", "overview-question-link", compactSentence(question.label || question.id, 26)); button.type = "button"; button.title = question.label || question.id; button.setAttribute("aria-label", `填写资料 ${index + 1}：${question.label || question.id}`); button.addEventListener("click", () => revealQuestion(question.id)); item.append(button); nodes.nextList.append(item); });
-  nodes.nextHeading.textContent = information.length ? "下一步先补充" : decisions.length ? "下一步核对选择" : "当前下一步";
-  nodes.note.textContent = information.length ? "先展示最多 3 项；其余必填与方法缺口仍需明确。" : state.dirty ? "先保存当前回答，再核对后续条件。" : decisions.length ? "资料问题暂已明确，仍需核对方案选择与方法依据。" : state.session.planning_incomplete ? "继续补齐方法依据，当前草稿不能直接执行。" : !hasAgentPlan() ? "调用 Agent 形成路线后，再核对实施环节。" : "逐节点核对关键点、难点与验收条件。";
-  nodes.questions.textContent = `全部问题（${list(state.session.questions).length}）`;
+function syncOverview() { syncWorkflow(); }
+function workflowState(session = state.session) {
+  const planned = hasAgentPlan(session), required = list(session?.questions).filter((question) => question.required);
+  const unresolved = required.filter((question) => !isQuestionResolved(question, questionValue(question)));
+  const agentBusy = ["starting", "running"].includes(state.agent?.status) || Boolean(state.agent?.commandPending);
+  const confirmed = session?.status === "confirmed" && !state.dirty;
+  return { planned, required, unresolved, agentBusy, confirmed, researching: planned && isStale(session) };
+}
+function syncWorkflow() {
+  const session = state.session, bar = $("stage-bar"), next = $("next-action"); if (!session || !bar || !next) return;
+  const flow = workflowState(session);
+  const stages = [
+    { label: "输入", done: true },
+    { label: "Agent 规划", done: flow.planned && !flow.researching, note: !flow.planned ? "" : flow.researching ? (session.plan_stale ? "待更新" : "未完成") : "" },
+    { label: "回答问题", done: flow.planned && !flow.unresolved.length && !state.dirty, note: flow.required.length ? `${flow.required.length - flow.unresolved.length}/${flow.required.length}` : "" },
+    { label: "确认方案", done: flow.confirmed },
+    { label: "导出", done: false }];
+  const refine = $("refine-plan");
+  let label, run, disabled = Boolean(state.operation), hint = "";
+  if (flow.agentBusy) { label = "Agent 处理中…"; disabled = true; run = null; hint = "可在 Agent 标签中补充说明"; }
+  else if (!flow.planned) { label = agentActionLabel(); run = () => refine.click(); disabled = refine.disabled; hint = refine.title; }
+  else if (state.dirty) { label = "保存回答"; run = () => $("intent-form").requestSubmit(); disabled = $("save-answers").disabled; }
+  else if (flow.unresolved.length) { label = `回答 ${flow.unresolved.length} 个必填问题`; run = () => revealQuestion(flow.unresolved[0].id); disabled = false; }
+  else if (flow.researching) { label = agentActionLabel(); run = () => refine.click(); disabled = refine.disabled; hint = refine.title; }
+  else if (!flow.confirmed) { label = "确认方案"; run = () => $("confirm-session").click(); disabled = $("confirm-session").disabled; hint = $("confirmation-detail").textContent; }
+  else { label = "导出 Markdown"; run = () => $("export-markdown").click(); disabled = false; }
+  const current = flow.agentBusy || !flow.planned || (flow.researching && !state.dirty && !flow.unresolved.length) ? 1 : state.dirty || flow.unresolved.length ? 2 : !flow.confirmed ? 3 : 4;
+  const key = JSON.stringify([stages, current]);
+  if (state.stageKey !== key) {
+    state.stageKey = key; bar.replaceChildren();
+    stages.forEach((stage, index) => { const item = el("li", stage.done ? "done" : index === current ? "current" : ""), mark = el("span", "stage-mark", stage.done ? "✓" : String(index + 1)); mark.ariaHidden = "true"; item.append(mark, el("span", "", stage.label)); if (stage.note) item.append(el("span", "stage-note", stage.note)); if (index === current) item.ariaCurrent = "step"; item.append(el("span", "visually-hidden", stage.done ? "（已完成）" : index === current ? "（当前）" : "")); bar.append(item); });
+  }
+  textIfChanged(next, label); setIfChanged(next, "disabled", Boolean(disabled)); setIfChanged(next, "title", hint || ""); next.onclick = run;
+  // The refine button stays available as a secondary action unless it is already the primary one.
+  refine.hidden = run !== null && label === agentActionLabel();
 }
 function renderStepKeyPoints(container, step) {
   container.append(el("h4", "", "关键点与输入"));
   const points = el("dl", "flow-key-points");
-  [["设置位置", step.location], ["作用区域", step.selection], ["所需输入", list(step.inputs).join("\n")]].forEach(([label, value]) => { const row = el("div", "step-detail"); row.append(el("dt", "step-detail-label", label), el("dd", "step-detail-value", value || "尚需补充")); points.append(row); }); container.append(points);
+  [["设置位置", step.location], ["作用区域", step.selection], ["所需输入", list(step.inputs).join("\n")]].forEach(([label, value]) => { if (!isNonBlank(value)) return; const row = el("div", "step-detail"); row.append(el("dt", "step-detail-label", label), el("dd", "step-detail-value", value)); points.append(row); });
+  if (points.childElementCount) container.append(points); else container.lastChild?.remove();
 }
 function renderMeshGuidance(container, step) {
   const guidance = el("div", "mesh-guidance"), parts = [...String(step.action || "").split(/(?<=[。；;\n])\s*/u), ...list(step.inputs), ...list(step.checks)].map((value) => String(value).trim()).filter(Boolean);
   const groups = [["网格类型与分区", /扫掠|映射|四面体|六面体|三角形|网格类型|单元类型|三维实体参考网格|\b(?:swept|mapped|tetrahed\w*|hexahed\w*|mesh type)\b/i], ["尺度依据", /尺度|尺寸|厚度|间隙|圆角|足迹|扩散|\bsize\b/i], ["局部加密", /加密|细化|梯度|承压|窄截面|边缘|\brefin\w*\b/i], ["质量检查", /网格质量|单元质量|雅可比|畸变|扭曲|偏斜|纵横比|单元翻转|负体积|\b(?:quality|jacobian|skew\w*|aspect)\b/i], ["收敛与目标量比较", /收敛|趋于稳定|加密对照|误差|\bconverg\w*\b/i]];
   const buckets = groups.map(() => []);
   [...new Set(parts)].forEach((part) => { const index = [3, 4, 0, 2, 1].find((candidate) => groups[candidate][1].test(part)); if (index !== undefined) buckets[index].push(part); });
-  guidance.append(el("p", "question-group-note", "以下摘自本节点已有内容；未列明的网格要求保留为待补充。"));
-  groups.forEach(([label], index) => { const section = el("section", "mesh-guidance-section"), matches = buckets[index]; section.append(el("h4", "mesh-guidance-title", label)); if (matches.length) { const ul = el("ul", "simple-list"); matches.forEach((text) => ul.append(el("li", "", text))); section.append(ul); } else section.append(el("p", "mesh-guidance-empty", "尚需补充：本分区未列出具体要求，可核对下方完整原文。")); guidance.append(section); }); container.append(guidance);
+  if (!buckets.some((matches) => matches.length)) return false;
+  const missing = groups.filter((_, index) => !buckets[index].length).map(([label]) => label);
+  groups.forEach(([label], index) => { const matches = buckets[index]; if (!matches.length) return; const section = el("section", "mesh-guidance-section"); section.append(el("h4", "mesh-guidance-title", label)); const ul = el("ul", "simple-list"); matches.forEach((text) => ul.append(el("li", "", text))); section.append(ul); guidance.append(section); });
+  if (missing.length) guidance.append(el("p", "mesh-guidance-empty", `未提及：${missing.join("、")}`));
+  container.append(guidance); return true;
 }
 function renderSettingsDisclosure(container, settings, session, title, className, note = "") {
   if (!settings.length) return;
@@ -884,7 +915,7 @@ function renderUnmappedSettings(container, steps, session = state.session) {
 }
 function renderSimulationFlow(container, steps, session = state.session) {
   if (!steps.length) { container.append(el("p", "inline-empty", "尚未形成实施流程。先完成 Agent 规划，再逐环节核对。")); renderUnmappedSettings(container, steps, session); return; }
-  container.append(el("h3", "plan-block-title", `仿真流程 · ${steps.length} 个环节`), el("p", "flow-reading-note", "按方案步骤阅读；前置条件见各节点，当前步骤均待实施。"));
+  container.append(el("h3", "plan-block-title", `建模流程 · ${steps.length} 步`));
   const flow = el("ol", "simulation-flow");
   steps.forEach((step, index) => {
     const mesh = /网格|\bmesh\b/i.test([step.title, step.location, step.selection].filter(Boolean).join(" "));
@@ -892,24 +923,22 @@ function renderSimulationFlow(container, steps, session = state.session) {
     const details = el("details", "flow-node-details"), summary = el("summary", "flow-node-summary"), heading = el("span", "flow-node-heading");
     heading.append(el("strong", "flow-node-title", step.title || `步骤 ${index + 1}`)); if (step.purpose) heading.append(el("span", "flow-node-purpose", compactSentence(step.purpose, 38)));
     summary.append(el("span", "flow-node-number", index + 1), heading, el("span", "badge badge-neutral flow-node-status", session?.plan_stale ? "待更新" : step.difficulty ? "需核查" : "待实施"));
-    const body = el("div", "flow-node-body"); if (step.purpose) body.append(el("p", "step-purpose", step.purpose));
+    const body = el("div", "flow-node-body"); if (step.purpose && compactSentence(step.purpose, 38) !== step.purpose) body.append(el("p", "step-purpose", step.purpose));
     let original = body;
-    if (mesh) { renderMeshGuidance(body, step); const full = disclosure("完整实施指南与输入", "flow-original"); body.append(full.details); original = full.content; }
-    const action = el("section", "flow-section"); action.append(el("h4", "", "实施指南"), el("p", "step-action", step.action || "尚需补充")); original.append(action); renderStepKeyPoints(original, step);
-    const difficulty = el("section", "flow-section flow-difficulty"); difficulty.append(el("h4", "", "难点解析"), el("p", "flow-difficulty-copy", step.difficulty || "尚需补充")); body.append(difficulty);
-    const checks = el("section", "flow-section"); checks.append(el("h4", "", "验收与检查")); if (list(step.checks).length) { const ul = el("ul", "step-checks"); step.checks.forEach((check) => ul.append(el("li", "", check))); checks.append(ul); } else checks.append(el("p", "inline-empty", "尚需补充验收要求。")); (mesh ? original : body).append(checks);
+    if (mesh && renderMeshGuidance(body, step)) { const full = disclosure("完整实施指南与输入", "flow-original"); body.append(full.details); original = full.content; }
+    const action = el("section", "flow-section"); action.append(el("h4", "", "实施指南"), el("p", "step-action", step.action || "Agent 未给出操作说明。")); original.append(action); renderStepKeyPoints(original, step);
+    if (isNonBlank(step.difficulty)) { const difficulty = el("section", "flow-section flow-difficulty"); difficulty.append(el("h4", "", "难点"), el("p", "flow-difficulty-copy", step.difficulty)); body.append(difficulty); }
+    if (list(step.checks).length) { const checks = el("section", "flow-section"); checks.append(el("h4", "", "验收与检查")); const ul = el("ul", "step-checks"); step.checks.forEach((check) => ul.append(el("li", "", check))); checks.append(ul); (original === body ? body : original).append(checks); }
     renderStepSettings(body, step, session);
-    const dependencies = el("div", "flow-dependencies"); dependencies.append(el("span", "", "明确依赖："));
-    if (!list(step.depends_on).length) dependencies.append(el("span", "dependency-note", "未列出前置步骤"));
-    list(step.depends_on).forEach((id) => { const dependency = steps.find((candidate) => candidate.id === id), link = el("button", "citation flow-dependency", dependency ? `${id} · ${dependency.title}` : `${id}（未找到对应节点）`); link.type = "button"; link.addEventListener("click", () => { const target = Array.from(flow.children).find((node) => node.dataset.stepId === id); if (!target) return; target.querySelector("details").open = true; target.scrollIntoView({ behavior: "smooth", block: "center" }); target.querySelector("summary")?.focus({ preventScroll: true }); }); dependencies.append(link); }); body.append(dependencies); appendCitations(body, step.source_ids, session);
+    const dependencies = el("div", "flow-dependencies"); dependencies.append(el("span", "", "前置步骤："));
+    list(step.depends_on).forEach((id) => { const dependency = steps.find((candidate) => candidate.id === id), link = el("button", "citation flow-dependency", dependency ? `${id} · ${dependency.title}` : `${id}（未找到对应节点）`); link.type = "button"; link.addEventListener("click", () => { const target = Array.from(flow.children).find((node) => node.dataset.stepId === id); if (!target) return; target.querySelector("details").open = true; target.scrollIntoView({ behavior: "smooth", block: "center" }); target.querySelector("summary")?.focus({ preventScroll: true }); }); dependencies.append(link); }); if (list(step.depends_on).length) body.append(dependencies); appendCitations(body, step.source_ids, session);
     details.append(summary, body); item.append(details); flow.append(item);
   }); container.append(flow); renderUnmappedSettings(container, steps, session);
 }
 function renderPlan() {
   const container = $("plan-content"); container.replaceChildren(); const plan = state.session?.plan || {}; state.overviewNodes = null;
   renderOverview(container); renderSimulationFlow(container, list(plan.steps));
-  const design = disclosure("路线比较与建模说明"); design.details.id = "plan-design-details";
-  if (plan.summary) design.content.append(el("p", "plan-summary", plan.summary));
+  const design = disclosure("路线比较与建模依据"); design.details.id = "plan-design-details";
   if (plan.evidence_status) design.content.append(el("div", "evidence-status", `证据状态：${plan.evidence_status}`));
   renderDesignBrief(design.content); container.append(design.details);
   const riskCount = list(plan.assumptions).length + list(plan.difficulties).length + list(plan.missing_information).length;
@@ -918,7 +947,7 @@ function renderPlan() {
   if (trace && (typeof trace !== "object" || Object.keys(trace).length)) { const details = disclosure("研究过程与来源轨迹", "research-trace"); details.content.append(el("pre", "raw-snapshot", typeof trace === "string" ? trace : JSON.stringify(trace, null, 2))); container.append(details.details); }
 }
 function renderSources() {
-  const sources = list(state.session?.sources), container = $("source-list"); container.replaceChildren(); $("source-count").textContent = `${sources.length} 个来源`;
+  const sources = list(state.session?.sources), container = $("source-list"); container.replaceChildren(); $("source-count").textContent = String(sources.length);
   if (!sources.length) { container.append(el("p", "inline-empty", hasAgentPlan() ? "当前方案未关联可核查文档。请核对 Agent 标注的推断与待研究项。" : "Agent 规划时会根据建模问题查阅依据，并将实际引用的文档显示在这里。")); return; }
   sources.forEach((source, index) => {
     const button = el("button", "source-card"); button.type = "button"; const top = el("span", "source-topline"); top.append(el("span", "source-index", index + 1), el("span", "", kindLabels[source.kind] || source.kind || "文档"));
@@ -982,7 +1011,7 @@ function updateQuestionStatus(question, field, status) {
 function syncConfirmation() {
   const session = state.session, questions = list(session?.questions), required = questions.filter((question) => question.required), unresolved = required.filter((question) => !isQuestionResolved(question, questionValue(question)));
   const agentBusy = ["starting", "running"].includes(state.agent?.status) || state.agent?.commandPending;
-  $("question-count").textContent = String(unresolved.length);
+  $("question-count").textContent = String(unresolved.length); $("question-count").hidden = unresolved.length === 0;
   $("intent-progress").textContent = `必填已回答 ${required.length - unresolved.length} / ${required.length}`;
   $("save-answers").disabled = !session || Boolean(state.operation) || !state.dirty;
   $("confirm-session").disabled = !session || Boolean(state.operation) || agentBusy || state.agent?.updateAvailable || state.agent?.refreshingPlan || state.dirty || unresolved.length > 0 || !hasAgentPlan(session) || isStale(session) || session.status === "confirmed";
@@ -1012,6 +1041,7 @@ function syncRefine() {
     setIfChanged(button, "disabled", !canSupplementSimplification());
     setIfChanged(button, "title", !hasAgentPlan() ? "先由 Agent 完成主要建模方案，再补充简化分析" : !hasRouteDesign() ? "旧版方案缺少建模路线设计，请先整体重新规划" : state.session?.plan_stale ? "建模输入已变化，请先整体重新规划" : state.dirty ? "请先保存回答，再补充简化分析" : available ? "向当前 Agent 对话发送模型简化任务；完成后需要核对新版本" : "Agent 对话面板尚未加载，请刷新页面");
   });
+  syncWorkflow();
 }
 function hasRouteDesign() { return isNonBlank(state.session?.design_brief?.objective) && list(state.session?.design_brief?.candidate_routes).length > 0; }
 function canSupplementSimplification() { return Boolean(state.session && hasAgentPlan() && hasRouteDesign() && !state.session.plan_stale && !state.operation && !state.dirty && agentPanel && !state.agent?.commandPending); }
@@ -1035,7 +1065,7 @@ async function refinePlan() {
   if (!state.session || $("refine-plan").disabled) return;
   const id = state.session.id;
   const text = `${hasAgentPlan() ? "请根据当前已保存的输入与回答，重新核对并更新仿真建模方案。" : "请根据当前已保存的目标与几何解析，设计仿真建模方案。"}请研究真实资料并比较物理路线，更新会话中的结构化方案与流程，说明各环节关键点、难点、网格构建与验证方式，保留未确定条件和需要我回答的问题。本次只做建模规划，不执行求解。`;
-  if (await agentPanel?.sendTask(text)) { if (state.session?.id !== id) return; selectTab("plan"); notice("规划任务已发送到当前 Agent 对话。回复和流程更新会自动显示，可继续补充说明。"); }
+  if (await agentPanel?.sendTask(text)) { if (state.session?.id !== id) return; selectTab("agent"); notice("规划任务已发送到当前 Agent 对话。回复和流程更新会自动显示，可继续补充说明。"); }
 }
 async function supplementSimplification() {
   if (!canSupplementSimplification()) return;
@@ -1172,7 +1202,7 @@ async function confirmVersionRestore() {
 
 function openDialog(id) { const dialog = $(id); if (!dialog.open) dialog.showModal(); }
 function openSystem() { renderSystem(); openDialog("system-dialog"); refreshStatus(true); }
-function updateAgentState(agent) { if (state.session && agent?.session_id && agent.session_id !== state.session.id) return; state.agent = state.session ? agent : null; syncConfirmation(); syncRefine(); syncVersionControls(); if ($("system-dialog").open) renderSystem(); }
+function updateAgentState(agent) { if (state.session && agent?.session_id && agent.session_id !== state.session.id) return; state.agent = state.session ? agent : null; syncConfirmation(); syncRefine(); syncWorkflow(); syncVersionControls(); if ($("system-dialog").open) renderSystem(); }
 function openSearch() { openDialog("search-dialog"); if (!$("search-query").value && state.session) $("search-query").value = state.session.goal || ""; $("search-query").focus(); }
 async function showSource(id) {
   caseGuide?.reset(); sourceRead?.abort(); const controller = new AbortController(); sourceRead = controller;
@@ -1312,7 +1342,14 @@ $("search-dialog").addEventListener("close", () => { searchRequest++; sourceSear
 $("build-index").addEventListener("click", buildIndex);
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
 document.querySelectorAll(".modal").forEach((dialog) => { dialog.addEventListener("click", (event) => { if (event.target !== dialog || dialog.id === "session-delete-dialog" && state.sessionDeletion?.submitting || dialog.id === "session-purge-dialog" && state.sessionPurge?.submitting) return; const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); }); });
-const tabs = ["plan", "intent", "history"];
+const tabs = sideTabs;
+const sessionMenu = $("session-menu"), sessionMenuButton = $("session-menu-button");
+if (sessionMenu?.showPopover) {
+  sessionMenu.addEventListener("toggle", (event) => { if (event.newState !== "open") return; const rect = sessionMenuButton.getBoundingClientRect(); sessionMenu.style.top = `${rect.bottom + 6}px`; sessionMenu.style.left = `${Math.max(8, Math.min(rect.right - sessionMenu.offsetWidth, window.innerWidth - sessionMenu.offsetWidth - 8))}px`; });
+  sessionMenu.addEventListener("click", (event) => { if (event.target.closest(".menu-item")) sessionMenu.hidePopover(); });
+  window.addEventListener("scroll", () => { if (sessionMenu.matches(":popover-open")) sessionMenu.hidePopover(); }, { passive: true });
+}
+if (window.ResizeObserver && $("workbench-header")) new ResizeObserver(([entry]) => $("workbench").style.setProperty("--workbench-header", `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe($("workbench-header"));
 tabs.forEach((tab, index) => { const button = $("tab-" + tab); button.addEventListener("click", () => selectTab(tab)); button.addEventListener("keydown", (event) => { let next; if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length]; if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length]; if (event.key === "Home") next = tabs[0]; if (event.key === "End") next = tabs[tabs.length - 1]; if (next) { event.preventDefault(); selectTab(next, true); } }); });
 window.addEventListener("beforeunload", (event) => { if (state.dirty || ["create", "refine", "answers", "upload"].includes(state.operation) || state.indexBusy) { event.preventDefault(); event.returnValue = ""; } });
 window.addEventListener("pagehide", () => { apiControllers.forEach((controller) => controller.abort()); });

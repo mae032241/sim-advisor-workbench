@@ -54,7 +54,8 @@ window.SimAdvisorAgentPanel = (() => {
     const uid = host.id || "sim-advisor-agent"; input.id = `${uid}-message`; label.htmlFor = input.id; input.rows = 3; input.maxLength = 12000; input.placeholder = "例如：重点解释网格构建，并说明还缺哪些信息。";
     const draftNote = make("p", "agent-draft-note"), actions = make("div", "agent-message-actions"), send = make("button", "button button-primary", "发送"), disconnect = button("断开连接");
     send.type = "submit"; actions.append(send, disconnect); form.append(label, input, draftNote, actions); conversation.append(summary, history, form);
-    host.classList.add("agent-panel"); host.setAttribute("aria-label", "Agent 对话"); host.replaceChildren(heading, modelSummary, connectionNote, dshBinding, settings, latest, activity, update, errorBox, conversation);
+    host.classList.add("agent-panel"); host.setAttribute("aria-label", "Agent 对话"); const connection = make("details", "agent-connection"), connectionSummary = make("summary", "", "连接方式与模型设置"); connection.append(connectionSummary, modelSummary, connectionNote, dshBinding, settings); conversation.open = true;
+    host.replaceChildren(heading, latest, activity, update, errorBox, conversation, connection);
 
     function current() { return !destroyed && sessionId && options.getSession?.()?.id === sessionId; }
     function bindingURL() { const url = new URL("/", window.location.href); url.searchParams.set("session", sessionId); return url.href; }
@@ -254,10 +255,10 @@ window.SimAdvisorAgentPanel = (() => {
     async function command(action, body = {}, messageText = null) {
       if (!current() || commandPending || busy()) return false;
       if (messageCursor === "new") { commandError = "正在订阅当前方案消息，请稍后再操作。"; render(); return false; }
-      if (["connect", "message"].includes(action) && (!savedSettings || settingsDirty())) { commandError = savedSettings ? "模型设置尚未保存，请先保存或还原设置，再连接或发送。" : "正在读取模型配置，请稍后再连接或发送。"; settings.open = true; render(); return false; }
+      if (["connect", "message"].includes(action) && (!savedSettings || settingsDirty())) { commandError = savedSettings ? "模型设置尚未保存，请先保存或还原设置，再连接或发送。" : "正在读取模型配置，请稍后再连接或发送。"; settings.open = true; connection.open = true; render(); return false; }
       if (["connect", "message"].includes(action) && managedStartBlocked()) { commandError = managedStartReason(); render(); return false; }
       if (connectionMode() === "external" && (action === "connect" || (action === "message" && !externalLive()))) { render(); return false; }
-      if (action === "settings" && settingsLocked()) { commandError = "已连接，请先断开再修改模型设置。"; settings.open = true; render(); return false; }
+      if (action === "settings" && settingsLocked()) { commandError = "已连接，请先断开再修改模型设置。"; settings.open = true; connection.open = true; render(); return false; }
       const token = epoch;
       pollSerial++; clearTimeout(timer); for (const controller of controllers) controller.abort();
       commandPending = true; localError = ""; commandError = ""; render();
@@ -279,7 +280,7 @@ window.SimAdvisorAgentPanel = (() => {
       sessionId = nextId; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; messageCursor = "new";
       textIfChanged(dshCopyStatus, ""); dshCopyStatus.hidden = true; dshLinkDetails.open = false;
       const configDraft = settingsDrafts.get(nextId); setManagedFields(configDraft || { managed_backend: "codex", model: "", reasoning_effort: "xhigh" }); modeInput.value = configDraft?.connection_mode || "managed";
-      clearMessages(); input.value = drafts.get(nextId) || ""; conversation.open = false; settings.open = false; render(); if (nextId) poll(epoch);
+      clearMessages(); input.value = drafts.get(nextId) || ""; conversation.open = true; settings.open = false; render(); if (nextId) poll(epoch);
     }
     connect.addEventListener("click", () => command("connect"));
     copyDshLink.addEventListener("click", async () => {

@@ -44,14 +44,14 @@
     <div class="main-shell">
       <header class="topbar">
         <div class="breadcrumbs"><span>工作空间</span><span aria-hidden="true">/</span><strong id="workspace-name">方案工作区</strong></div>
-        <div class="topbar-right"><nav class="mobile-view-nav" aria-label="主视图"><button id="open-workspace-mobile" class="mobile-library-button" type="button" aria-current="page" aria-controls="plan-workspace">方案</button><button id="open-plan-management-mobile" class="mobile-library-button" type="button" aria-controls="plan-management">管理</button><button id="open-libraries-mobile" class="mobile-library-button" type="button" aria-controls="library-management">资料库</button></nav><span class="local-pill"><span></span> 本地原型</span><button id="system-shortcut" class="avatar-button" type="button" aria-label="查看服务状态">SA</button></div>
+        <div class="topbar-right"><nav class="mobile-view-nav" aria-label="主视图"><button id="open-workspace-mobile" class="mobile-library-button" type="button" aria-current="page" aria-controls="plan-workspace">方案</button><button id="open-plan-management-mobile" class="mobile-library-button" type="button" aria-controls="plan-management">管理</button><button id="open-libraries-mobile" class="mobile-library-button" type="button" aria-controls="library-management">资料库</button></nav><button id="system-shortcut" class="status-button" type="button" title="引擎与知识库状态"><span class="status-dot" id="topbar-dot" aria-hidden="true"></span><span>服务状态</span></button></div>
       </header>
       <main id="main" tabindex="-1">
         <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
         <section id="plan-workspace" class="plan-workspace" aria-label="方案工作区">
         <div class="page-heading">
           <div><p class="eyebrow">GEOMETRY → PHYSICS → PLAN</p><h1>从几何与目标，开始设计仿真。</h1><p class="page-description">上传 STEP 几何，让 Agent 研究物理场、材料与工况，再一起确认建模方案。</p></div>
-          <span class="prototype-label"><span aria-hidden="true">◈</span> COMSOL Simulation Advisor</span>
+          
         </div>
 
         <details class="task-inputs" id="task-inputs" open>
@@ -78,15 +78,65 @@
         </section>
         </details>
 
-        <section class="panel workbench" id="workbench" aria-labelledby="plan-heading" hidden>
-          <div class="workbench-header"><div><p class="eyebrow">SIMULATION WORKFLOW</p><h2 id="plan-heading">仿真任务</h2><div class="session-meta"><span id="session-status" class="badge"></span><span id="revision-label"></span></div></div><div class="export-actions"><button id="open-versions" class="button button-subtle versions-open" type="button">方案版本</button><button id="refine-plan" class="button button-primary agent-plan-action" type="button" disabled>Agent 规划方案 <span aria-hidden="true">✧</span></button><details class="session-record-details"><summary>版本与导出</summary><div class="record-actions"><span id="plan-engine"></span><button id="analyze-simplification" class="button button-subtle simplification-action" type="button" disabled>补充简化分析</button><a id="export-markdown" class="button button-subtle" href="#" download>导出 Markdown <span aria-hidden="true">↓</span></a><a id="export-json" class="button button-ghost" href="#" download>JSON</a><button id="delete-current-session" class="button button-ghost session-current-delete" type="button" disabled>删除方案</button></div></details></div></div>
-          <div class="plan-disclaimer">方案用于建模规划，求解与物理验证尚未执行。</div>
-          <section id="agent-panel" hidden></section>
-          <div id="planning-state" class="planning-state" hidden></div>
-          <div class="tabs" role="tablist" aria-label="方案详情"><button id="tab-plan" class="tab active" role="tab" aria-selected="true" aria-controls="view-plan" type="button" data-tab="plan">仿真流程</button><button id="tab-intent" class="tab" role="tab" aria-selected="false" aria-controls="view-intent" tabindex="-1" type="button" data-tab="intent">待确认 <span id="question-count" class="tab-count">0</span></button><button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history">版本记录</button></div>
-          <section id="view-plan" class="tab-view" role="tabpanel" aria-labelledby="tab-plan"><div class="plan-layout"><div id="plan-content"></div><details class="disclosure-section evidence-column"><summary><span id="evidence-heading">引用资料</span><span id="source-count" class="small-label"></span></summary><div class="disclosure-body"><p class="evidence-help">打开来源，核对适用章节与版本。</p><div id="source-list" class="source-list"></div><button id="search-more" class="text-button" type="button">检索更多文档 <span aria-hidden="true">↗</span></button></div></details></div></section>
-          <section id="view-intent" class="tab-view" role="tabpanel" aria-labelledby="tab-intent" hidden><div class="intent-intro"><div><h3>把关键选择说清楚</h3><p>问题由 Agent 结合目标与几何提出。明确关键选择；涉及工况或路线的调整，需要更新方案后再确认。</p></div><span class="badge badge-neutral" id="intent-progress"></span></div><form id="intent-form"><div id="question-list" class="question-list"></div><div class="confirmation-bar"><div><strong id="confirmation-title">等待确认</strong><p id="confirmation-detail">先由 Agent 规划方案，并明确关键意图。</p></div><div class="confirmation-actions"><button id="save-answers" class="button button-subtle" type="submit">保存回答</button><button id="confirm-session" class="button button-primary" type="button" disabled>确认当前方案 <span aria-hidden="true">✓</span></button></div></div></form></section>
-          <section id="view-history" class="tab-view" role="tabpanel" aria-labelledby="tab-history" hidden><div class="history-intro"><h3>方案版本与操作记录</h3><p>查看已保存的完整快照；恢复历史内容会创建新修订，当前版本号不会回退。</p><button id="refresh-versions" class="text-button" type="button">刷新版本列表</button></div><p id="history-status" class="muted" role="status"></p><ol id="history-list" class="history-list"></ol><details class="disclosure-section"><summary>完整操作记录</summary><ol id="history-operations" class="history-list"></ol></details></section>
+        <section class="workbench" id="workbench" aria-labelledby="plan-heading" hidden>
+          <header class="workbench-header" id="workbench-header">
+            <div class="workbench-title">
+              <h2 id="plan-heading">仿真任务</h2>
+              <p class="session-meta"><span id="session-status" class="badge" hidden></span><span id="revision-label"></span><span class="plan-disclaimer">建模规划 · 未运行求解</span></p>
+            </div>
+            <div class="export-actions">
+              <button id="next-action" class="button button-primary next-action" type="button">继续</button>
+              <button id="refine-plan" class="button button-subtle agent-plan-action" type="button" disabled>Agent 规划方案 <span aria-hidden="true">✧</span></button>
+              <button id="session-menu-button" class="button button-subtle session-menu-button" type="button" popovertarget="session-menu" aria-label="更多方案操作" title="更多方案操作">⋯</button>
+              <div id="session-menu" class="session-menu" popover>
+                <button id="open-versions" class="menu-item versions-open" type="button">方案版本</button>
+                <button id="analyze-simplification" class="menu-item simplification-action" type="button" disabled>补充简化分析</button>
+                <hr>
+                <a id="export-markdown" class="menu-item" href="#" download>导出 Markdown</a>
+                <a id="export-json" class="menu-item" href="#" download>导出 JSON</a>
+                <hr>
+                <button id="delete-current-session" class="menu-item session-current-delete" type="button" disabled>删除方案</button>
+                <p id="plan-engine" class="menu-note"></p>
+              </div>
+            </div>
+            <ol id="stage-bar" class="stage-bar" aria-label="任务进度"></ol>
+          </header>
+          <div class="workbench-body">
+            <div class="workbench-main">
+              <div id="planning-state" class="planning-state" role="status" hidden></div>
+              <section id="view-plan" class="plan-main" aria-label="方案内容"><div id="plan-content"></div></section>
+            </div>
+            <aside class="workbench-side" id="workbench-side" aria-label="需要处理的事项">
+              <div class="tabs side-tabs" role="tablist" aria-label="待办与对话">
+                <button id="tab-intent" class="tab active" role="tab" aria-selected="true" aria-controls="view-intent" type="button" data-tab="intent">待确认 <span id="question-count" class="tab-count">0</span></button>
+                <button id="tab-agent" class="tab" role="tab" aria-selected="false" aria-controls="view-agent" tabindex="-1" type="button" data-tab="agent">Agent</button>
+                <button id="tab-sources" class="tab" role="tab" aria-selected="false" aria-controls="view-sources" tabindex="-1" type="button" data-tab="sources">来源 <span id="source-count" class="tab-count tab-count-neutral">0</span></button>
+                <button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history">记录</button>
+              </div>
+              <section id="view-intent" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-intent">
+                <form id="intent-form">
+                  <p class="side-intro"><span id="intent-progress" class="badge badge-neutral"></span> Agent 根据目标和几何提出的问题。回答改变工况或路线时，需要让 Agent 更新方案后再确认。</p>
+                  <div id="question-list" class="question-list"></div>
+                  <div class="confirmation-bar">
+                    <div><strong id="confirmation-title">等待确认</strong><p id="confirmation-detail">先由 Agent 规划方案，并明确关键意图。</p></div>
+                    <div class="confirmation-actions"><button id="save-answers" class="button button-subtle" type="submit">保存回答</button><button id="confirm-session" class="button button-primary" type="button" disabled>确认当前方案 <span aria-hidden="true">✓</span></button></div>
+                  </div>
+                </form>
+              </section>
+              <section id="view-agent" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-agent" hidden><section id="agent-panel" hidden></section></section>
+              <section id="view-sources" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-sources" hidden>
+                <p class="side-intro">方案引用的手册与案例。打开来源，核对适用章节与版本。</p>
+                <div id="source-list" class="source-list"></div>
+                <button id="search-more" class="button button-subtle" type="button">检索更多资料</button>
+              </section>
+              <section id="view-history" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-history" hidden>
+                <p class="side-intro">已保存的完整快照。恢复历史内容会创建新修订，版本号不会回退。 <button id="refresh-versions" class="text-button" type="button">刷新</button></p>
+                <p id="history-status" class="muted" role="status"></p>
+                <ol id="history-list" class="history-list"></ol>
+                <details class="disclosure-section"><summary>完整操作记录</summary><ol id="history-operations" class="history-list"></ol></details>
+              </section>
+            </aside>
+          </div>
         </section>
 
         <section id="how-it-works" class="workflow-note" aria-label="工作流程"><div><span class="workflow-dot">1</span><div><h3>读取几何与目标</h3><p>STEP 几何或已有仿真模型</p></div></div><span class="workflow-line" aria-hidden="true"></span><div><span class="workflow-dot">2</span><div><h3>Agent 研究方案</h3><p>设计物理模型并查阅真实依据</p></div></div><span class="workflow-line" aria-hidden="true"></span><div><span class="workflow-dot">3</span><div><h3>确认建模意图</h3><p>补齐工况，迭代并保留版本</p></div></div></section>

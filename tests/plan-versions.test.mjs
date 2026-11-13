@@ -70,7 +70,8 @@ test('historical preview shows flow, mesh and saved answers without adopting it,
   assert.equal(f.run('state.session'), f.current); assert.equal(f.run('state.session.revision'), 3); assert.equal(f.run('state.draftAnswers.q'), 'unsaved draft');
   assert.equal(f.agentBindings.length, 0); assert.ok(f.calls.every(call => !call.settings.method));
   assert.match(f.get('version-preview').textContent, /网格构建.*Thin gaps need inspection/s);
-  assert.match(f.get('version-preview').textContent, /网格类型与分区.*尺度依据.*局部加密.*质量检查.*收敛/s);
+  assert.match(f.get('version-preview').textContent, /网格类型与分区.*尺度依据.*质量检查.*收敛.*未提及：局部加密/s);
+  assert.doesNotMatch(f.get('version-preview').textContent, /尚需补充/);
   assert.match(f.get('version-preview').textContent, /saved 2/); assert.match(f.get('version-preview').textContent, /只读/);
   assert.equal(all(f.get('version-preview')).some(node => node.tagName === 'INPUT' || node.tagName === 'TEXTAREA'), false);
   assert.equal(f.run('versionsState.versions.some(item => Boolean(item.plan))'), false);
