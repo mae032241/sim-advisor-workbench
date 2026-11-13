@@ -558,12 +558,34 @@ async function uploadModel(file) {
 }
 
 const sideTabs = ["intent", "agent", "sources", "history"];
-function selectTab(name, focus = false) {
+function storedPreference(key, fallback) { try { return window.localStorage?.getItem(key) ?? fallback; } catch { return fallback; } }
+function storePreference(key, value) { try { window.localStorage?.setItem(key, value); } catch { /* preference only */ } }
+state.sidePanelOpen = storedPreference("simAdvisor.sidePanel", "open") !== "closed";
+state.navPreference = storedPreference("simAdvisor.nav", "");
+function setSidePanel(open) {
+  state.sidePanelOpen = Boolean(open); storePreference("simAdvisor.sidePanel", open ? "open" : "closed");
+  $("workbench")?.classList.toggle("side-collapsed", !state.sidePanelOpen);
+  if ($("workbench-side")) $("workbench-side").hidden = !state.sidePanelOpen;
+  sideTabs.forEach((tab) => $("tab-" + tab)?.setAttribute("aria-expanded", String(state.sidePanelOpen && state.tab === tab)));
+}
+// Left navigation: the user's explicit choice wins; until they make one it folds while a plan is open.
+function navCompact() { return state.navPreference ? state.navPreference === "compact" : Boolean(state.session); }
+function syncNav() {
+  const compact = navCompact(); document.body.classList.toggle("nav-compact", compact);
+  const toggle = $("nav-toggle"); if (!toggle) return;
+  const label = compact ? "展开导航" : "收起导航";
+  toggle.setAttribute("aria-expanded", String(!compact)); toggle.title = label; toggle.setAttribute("aria-label", label);
+  const text = toggle.querySelector?.(".nav-toggle-label"); if (text) text.textContent = label;
+  const icon = toggle.querySelector?.("[aria-hidden]"); if (icon) icon.textContent = compact ? "»" : "«";
+}
+function toggleNav() { state.navPreference = navCompact() ? "expanded" : "compact"; storePreference("simAdvisor.nav", state.navPreference); syncNav(); }
+function selectTab(name, focus = false, open = true) {
   if (!sideTabs.includes(name)) name = "intent";
   state.tab = name;
   sideTabs.forEach((tab) => {
     const selected = tab === name; $("tab-" + tab).classList.toggle("active", selected); $("tab-" + tab).setAttribute("aria-selected", String(selected)); $("tab-" + tab).tabIndex = selected ? 0 : -1; $("view-" + tab).hidden = !selected;
   });
+  if (open) setSidePanel(true); else setSidePanel(state.sidePanelOpen);
   if (focus) $("tab-" + name).focus();
   if (name === "history" && state.session) void loadVersions();
 }
@@ -606,8 +628,8 @@ function adoptSession(session, resetTab = false) {
   $("goal").value = session.goal || ""; $("model-path").value = state.modelPath; $("file-name").textContent = "或填写本机文件路径";
   $("workbench").hidden = false; $("how-it-works").hidden = true;
   if ($("task-inputs")) $("task-inputs").open = false;
-  document.body.classList.add("has-session");
-  renderModel(); renderSession(); if (resetTab) selectTab("intent");
+  document.body.classList.add("has-session"); syncNav();
+  renderModel(); renderSession(); if (resetTab) selectTab("intent", false, false);
   agentPanel?.bindSession();
   if ($("system-dialog").open) renderSystem();
   state.returnSessionId = session.id; syncWorkspaceURL();
@@ -637,7 +659,7 @@ function clearSessionContext() {
   state.sessionRequest++; state.session = null; state.agent = null; state.returnSessionId = null; state.model = null; state.modelPath = ""; state.draftAnswers = {}; state.dirty = false;
   agentPanel?.bindSession();
   if ($("system-dialog").open) renderSystem();
-  state.overviewNodes = null; state.questionGroups = []; document.body.classList.remove("has-session");
+  state.overviewNodes = null; state.questionGroups = []; document.body.classList.remove("has-session"); syncNav();
   if ($("task-inputs")) $("task-inputs").open = true;
   $("intake-form").reset(); $("file-name").textContent = "或填写本机文件路径"; $("workbench").hidden = true; $("how-it-works").hidden = false;
   $("plan-heading").textContent = "仿真任务"; $("revision-label").textContent = ""; $("export-markdown").href = "#"; $("export-json").href = "#";
@@ -660,7 +682,7 @@ function renderSession() {
   $("plan-engine").title = engine || "未报告";
   $("export-markdown").href = `/api/sessions/${encodeURIComponent(session.id)}/export?format=markdown`;
   $("export-json").href = `/api/sessions/${encodeURIComponent(session.id)}/export?format=json`;
-  renderPlanningState(); renderPlan(); renderSources(); renderQuestions(); renderHistory(); syncRefine(); renderSessions(); selectTab(state.tab);
+  renderPlanningState(); renderPlan(); renderSources(); renderQuestions(); renderHistory(); syncRefine(); renderSessions(); selectTab(state.tab, false, false);
 }
 function renderPlanningState() {
   const container = $("planning-state"); container.replaceChildren();
@@ -1415,6 +1437,8 @@ document.querySelectorAll("[data-close]").forEach((button) => button.addEventLis
 // Native closedby="any" light-dismiss routes through each dialog's cancel handler; this is the fallback for older browsers.
 if (typeof HTMLDialogElement === "undefined" || !("closedBy" in HTMLDialogElement.prototype)) document.querySelectorAll(".modal").forEach((dialog) => { dialog.addEventListener("click", (event) => { if (event.target !== dialog || dialog.id === "session-delete-dialog" && state.sessionDeletion?.submitting || dialog.id === "session-purge-dialog" && state.sessionPurge?.submitting) return; const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); }); });
 const tabs = sideTabs;
+$("nav-toggle")?.addEventListener("click", toggleNav);
+syncNav();
 const sessionMenu = $("session-menu"), sessionMenuButton = $("session-menu-button");
 if (sessionMenu?.showPopover) {
   sessionMenu.addEventListener("toggle", (event) => { if (event.newState !== "open") return; const rect = sessionMenuButton.getBoundingClientRect(); sessionMenu.style.top = `${rect.bottom + 6}px`; sessionMenu.style.left = `${Math.max(8, Math.min(rect.right - sessionMenu.offsetWidth, window.innerWidth - sessionMenu.offsetWidth - 8))}px`; });
@@ -1422,7 +1446,7 @@ if (sessionMenu?.showPopover) {
   window.addEventListener("scroll", () => { if (sessionMenu.matches(":popover-open")) sessionMenu.hidePopover(); }, { passive: true });
 }
 if (window.ResizeObserver && $("workbench-header")) new ResizeObserver(([entry]) => $("workbench").style.setProperty("--workbench-header", `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe($("workbench-header"));
-tabs.forEach((tab, index) => { const button = $("tab-" + tab); button.addEventListener("click", () => selectTab(tab)); button.addEventListener("keydown", (event) => { let next; if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length]; if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length]; if (event.key === "Home") next = tabs[0]; if (event.key === "End") next = tabs[tabs.length - 1]; if (next) { event.preventDefault(); selectTab(next, true); } }); });
+tabs.forEach((tab, index) => { const button = $("tab-" + tab); button.addEventListener("click", () => (state.tab === tab && state.sidePanelOpen) ? setSidePanel(false) : selectTab(tab)); button.addEventListener("keydown", (event) => { let next; if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length]; if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length]; if (event.key === "Home") next = tabs[0]; if (event.key === "End") next = tabs[tabs.length - 1]; if (next) { event.preventDefault(); selectTab(next, true); } }); });
 window.addEventListener("beforeunload", (event) => { if (state.dirty || ["create", "refine", "answers", "upload"].includes(state.operation) || state.indexBusy) { event.preventDefault(); event.returnValue = ""; } });
 window.addEventListener("pagehide", () => { apiControllers.forEach((controller) => controller.abort()); });
 const libraryManagement = $("library-management");

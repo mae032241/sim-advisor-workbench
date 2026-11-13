@@ -19,18 +19,18 @@
 <body>
   <a class="skip-link" href="#main">跳至工作区</a>
   <div class="app-shell">
-    <aside class="sidebar" aria-label="工作台导航">
-      <a class="brand" href="/" aria-label="Simulation Advisor 首页">
+    <aside class="sidebar" id="sidebar-nav" aria-label="工作台导航">
+      <div class="sidebar-top"><a class="brand" href="/" aria-label="Simulation Advisor 首页">
         <span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 36 36" fill="none"><path d="M18 3 31 10.5v15L18 33 5 25.5v-15L18 3Z" stroke="currentColor" stroke-width="1.4"/><path d="m5 10.5 13 7.7 13-7.7M18 18.2V33M11.5 6.8v15L24.5 29M24.5 6.8v15l-13 7.2" stroke="currentColor" stroke-width="1.2"/></svg></span>
         <span>Simulation<span class="brand-secondary">Advisor</span></span>
-      </a>
+      </a><button id="nav-toggle" class="nav-toggle" type="button" aria-expanded="true" aria-controls="sidebar-nav" aria-label="收起导航" title="收起导航"><span aria-hidden="true">«</span><span class="nav-toggle-label visually-hidden">收起导航</span></button></div>
       <div class="workspace-label">COMSOL 仿真工作台 <span>LOCAL</span></div>
-      <button class="new-session-button" id="new-session" type="button"><span aria-hidden="true">＋</span> 新建仿真任务</button>
+      <button class="new-session-button" id="new-session" type="button" title="新建仿真任务"><span aria-hidden="true">＋</span> 新建仿真任务</button>
       <nav class="side-nav" aria-label="工作区">
-        <button class="side-nav-link active" id="open-workspace" type="button" aria-current="page" aria-controls="plan-workspace"><span aria-hidden="true">▤</span> 方案工作区</button>
-        <button class="side-nav-link" id="open-plan-management" type="button" aria-controls="plan-management"><span aria-hidden="true">▦</span> 方案管理</button>
-        <button class="side-nav-link" id="open-search" type="button"><span aria-hidden="true">⌕</span> 文档与案例检索</button>
-        <button class="side-nav-link" id="open-libraries" type="button" aria-controls="library-management"><span aria-hidden="true">▤</span> 资料库管理</button>
+        <button class="side-nav-link active" id="open-workspace" type="button" title="方案工作区" aria-current="page" aria-controls="plan-workspace"><span aria-hidden="true">▤</span> 方案工作区</button>
+        <button class="side-nav-link" id="open-plan-management" type="button" title="方案管理" aria-controls="plan-management"><span aria-hidden="true">▦</span> 方案管理</button>
+        <button class="side-nav-link" id="open-search" type="button" title="文档与案例检索"><span aria-hidden="true">⌕</span> 文档与案例检索</button>
+        <button class="side-nav-link" id="open-libraries" type="button" title="资料库管理" aria-controls="library-management"><span aria-hidden="true">▤</span> 资料库管理</button>
       </nav>
       <div class="sidebar-section-label"><span id="session-history-title">最近方案</span><button id="refresh-history" class="quiet-icon" type="button" aria-label="刷新方案历史" title="刷新方案历史">↻</button></div>
       <div id="session-list" class="session-list"><p class="side-empty">正在读取本地历史…</p></div>
@@ -99,7 +99,15 @@
                 <p id="plan-engine" class="menu-note"></p>
               </div>
             </div>
-            <ol id="stage-bar" class="stage-bar" aria-label="任务进度"></ol>
+            <div class="workbench-subbar">
+              <ol id="stage-bar" class="stage-bar" aria-label="任务进度"></ol>
+              <div class="tabs side-tabs panel-nav" role="tablist" aria-label="右侧面板">
+                <button id="tab-intent" class="tab active" role="tab" aria-selected="true" aria-controls="view-intent" type="button" data-tab="intent">待确认 <span id="question-count" class="tab-count">0</span></button>
+                <button id="tab-agent" class="tab" role="tab" aria-selected="false" aria-controls="view-agent" tabindex="-1" type="button" data-tab="agent">Agent</button>
+                <button id="tab-sources" class="tab" role="tab" aria-selected="false" aria-controls="view-sources" tabindex="-1" type="button" data-tab="sources">来源 <span id="source-count" class="tab-count tab-count-neutral">0</span></button>
+                <button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history">记录</button>
+              </div>
+            </div>
           </header>
           <div class="workbench-body">
             <div class="workbench-main">
@@ -107,12 +115,6 @@
               <section id="view-plan" class="plan-main" aria-label="方案内容"><div id="plan-content"></div></section>
             </div>
             <aside class="workbench-side" id="workbench-side" aria-label="需要处理的事项">
-              <div class="tabs side-tabs" role="tablist" aria-label="待办与对话">
-                <button id="tab-intent" class="tab active" role="tab" aria-selected="true" aria-controls="view-intent" type="button" data-tab="intent">待确认 <span id="question-count" class="tab-count">0</span></button>
-                <button id="tab-agent" class="tab" role="tab" aria-selected="false" aria-controls="view-agent" tabindex="-1" type="button" data-tab="agent">Agent</button>
-                <button id="tab-sources" class="tab" role="tab" aria-selected="false" aria-controls="view-sources" tabindex="-1" type="button" data-tab="sources">来源 <span id="source-count" class="tab-count tab-count-neutral">0</span></button>
-                <button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history">记录</button>
-              </div>
               <section id="view-intent" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-intent">
                 <form id="intent-form">
                   <p class="side-intro"><span id="intent-progress" class="badge badge-neutral"></span> Agent 根据目标和几何提出的问题。回答改变工况或路线时，需要让 Agent 更新方案后再确认。</p>
