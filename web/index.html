@@ -117,6 +117,7 @@
                 <form id="intent-form">
                   <p class="side-intro"><span id="intent-progress" class="badge badge-neutral"></span> Agent 根据目标和几何提出的问题。回答改变工况或路线时，需要让 Agent 更新方案后再确认。</p>
                   <div id="question-list" class="question-list"></div>
+                  <section id="plan-gaps" class="plan-gaps" hidden></section>
                   <div class="confirmation-bar">
                     <div><strong id="confirmation-title">等待确认</strong><p id="confirmation-detail">先由 Agent 规划方案，并明确关键意图。</p></div>
                     <div class="confirmation-actions"><button id="save-answers" class="button button-subtle" type="submit">保存回答</button><button id="confirm-session" class="button button-primary" type="button" disabled>确认当前方案 <span aria-hidden="true">✓</span></button></div>
@@ -130,6 +131,8 @@
                 <button id="search-more" class="button button-subtle" type="button">检索更多资料</button>
               </section>
               <section id="view-history" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-history" hidden>
+                <section id="research-trace" class="research-trace-panel"></section>
+                <h3 class="side-subtitle">方案版本</h3>
                 <p class="side-intro">已保存的完整快照。恢复历史内容会创建新修订，版本号不会回退。 <button id="refresh-versions" class="text-button" type="button">刷新</button></p>
                 <p id="history-status" class="muted" role="status"></p>
                 <ol id="history-list" class="history-list"></ol>

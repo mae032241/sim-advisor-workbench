@@ -2,7 +2,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { status: null, session: null, model: null, modelPath: "", operation: null, tab: "intent", workspaceView: "plans", returnSessionId: null, draftAnswers: {}, dirty: false, indexBusy: false, indexResult: null, sourceRequest: 0, statusRequest: 0, sessionRequest: 0, questionGroups: [], overviewNodes: null, agent: null, showDeletedSessions: false, deletedSessions: [], deletedSessionIds: new Set(), restoredSessionIds: new Set(), trashRequest: 0, trashLoading: false, trashError: "", sessionDeletion: null };
+const state = { status: null, session: null, model: null, modelPath: "", operation: null, tab: "intent", planView: "flow", workspaceView: "plans", returnSessionId: null, draftAnswers: {}, dirty: false, indexBusy: false, indexResult: null, sourceRequest: 0, statusRequest: 0, sessionRequest: 0, questionGroups: [], overviewNodes: null, agent: null, showDeletedSessions: false, deletedSessions: [], deletedSessionIds: new Set(), restoredSessionIds: new Set(), trashRequest: 0, trashLoading: false, trashError: "", sessionDeletion: null };
 Object.assign(state, { managedSessions: [], managementLoaded: false, managementLoading: false, managementError: "", managementRequest: 0, managementRead: null, managementTotal: 0, managementNextOffset: null, sessionPurge: null });
 let agentPanel = null;
 let statusRead = null;
@@ -718,8 +718,17 @@ function renderSimplification(container, simplification, session = state.session
   const section = el("section", "simplification-section");
   const heading = el("div", "simplification-section-heading"); heading.append(el("h4", "design-label", "模型简化指导"));
   if (!readOnly) { const supplement = el("button", "button button-subtle simplification-action", "补充简化分析"); supplement.type = "button"; supplement.addEventListener("click", supplementSimplification); heading.append(supplement); }
-  section.append(heading, el("p", "simplification-intro", "结合输入解析与相关案例评估简化机会。以下为待核查的建模建议，尚未修改 CAD。"));
+  const candidateCount = list(simplification.candidates).length;
+  section.append(heading);
+  if (candidateCount) section.append(el("p", "simplification-intro", "以下为待核查的建模建议，尚未修改 CAD。"));
   if (simplification.objective) section.append(el("p", "design-copy", simplification.objective));
+  if (!candidateCount) {
+    const facts = el("dl", "basis-facts");
+    const row = (label, items) => { if (!list(items).length) return; facts.append(el("dt", "", label), el("dd", "", list(items).map(valueText).join("；"))); };
+    row("应保留", simplification.protected_features); row("待检查几何", simplification.unresolved_geometry);
+    section.append(el("p", "basis-note", "Agent 尚未提出具体的简化候选。")); if (facts.childElementCount) section.append(facts);
+    container.append(section); return;
+  }
   if (list(simplification.protected_features).length) {
     const protectedFeatures = el("div", "protected-features"); protectedFeatures.append(el("h5", "route-detail-label", "应保留的物理与几何特征"));
     const ul = el("ul", "route-list-text"); simplification.protected_features.forEach((item) => ul.append(el("li", "", item))); protectedFeatures.append(ul); section.append(protectedFeatures);
@@ -752,57 +761,69 @@ function renderSimplification(container, simplification, session = state.session
   }
   container.append(section);
 }
+function basisSection(container, title, className = "") { const section = el("section", `basis-section ${className}`.trim()); section.append(el("h3", "basis-title", title)); container.append(section); return section; }
 function renderDesignBrief(container, session = state.session, readOnly = false) {
-  const brief = session?.design_brief || session?.plan?.design_brief; if (!brief || typeof brief !== "object") return;
-  const section = el("section", "design-brief"), heading = el("div", "design-brief-heading");
-  heading.append(el("p", "eyebrow", "PHYSICS & MODELING DESIGN"), el("h3", "", "建模路线与依据")); section.append(heading);
-  if (brief.objective) { section.append(el("h4", "design-label", "目标与需要回答的问题"), el("p", "design-copy", brief.objective)); }
-  if (brief.domain_strategy) { const strategy = el("div", "domain-strategy"); strategy.append(el("h4", "design-label", "计算域与物理建模策略"), el("p", "design-copy", brief.domain_strategy)); section.append(strategy); }
-  if (list(brief.geometry_interpretation).length) {
-    const interpretations = el("div", "geometry-interpretations"); interpretations.append(el("h4", "design-label", "几何的物理意义"), el("p", "interpretation-evidence", "本区为 Agent 对几何物理意义的解释，需核对原始解析事实；请结合结构化几何引用与技术证据审查。"));
-    const labels = { observed: "Agent 引述（待核对）", hypothesis: "待验证假设", unknown: "未知" };
-    list(brief.geometry_interpretation).forEach((item) => { const card = el("div", `geometry-interpretation ${item.status === "observed" ? "observed" : "hypothesis"}`), line = el("div", "interpretation-line"); line.append(el("span", `badge ${item.status === "observed" ? "badge-neutral" : "badge-warn"}`, labels[item.status] || item.status || "待核对"), el("p", "", item.statement || "")); card.append(line); if (item.evidence) card.append(el("p", "interpretation-evidence", `依据：${item.evidence}`)); interpretations.append(card); }); section.append(interpretations);
+  const brief = session?.design_brief || session?.plan?.design_brief || {}, plan = session?.plan || {};
+  if (plan.evidence_status && hasAgentPlan(session)) container.append(el("p", "basis-evidence", `依据状态：${plan.evidence_status}`));
+  const routes = list(brief.candidate_routes);
+  if (routes.length) {
+    const section = basisSection(container, routes.length > 1 ? `路线对比（${routes.length} 条）` : "建模路线");
+    const statuses = { candidate: ["备选", "badge-neutral"], recommended: ["推荐", "badge-good"], blocked: ["条件不满足", "badge-warn"] };
+    const wrap = el("div", "basis-table-wrap"), table = el("table", "basis-table"), head = el("tr");
+    head.append(el("th", "", "")); routes.forEach((route) => { const th = el("th"); th.scope = "col"; const [label, tone] = statuses[route.status] || [route.status || "待研究", "badge-neutral"]; th.append(el("span", "basis-route-name", route.name || route.id || "建模路线"), el("span", `badge ${tone}`, label)); head.append(th); });
+    const thead = el("thead"); thead.append(head); const tbody = el("tbody");
+    const rows = [["物理场", (route) => list(route.physics).join("、")], ["理由", (route) => route.rationale], ["取舍与代价", (route) => valueText(route.tradeoffs)], ["适用前提", (route) => list(route.assumptions)], ["还需要的输入", (route) => list(route.required_inputs)]];
+    rows.forEach(([label, pick]) => {
+      const values = routes.map(pick); if (!values.some((value) => Array.isArray(value) ? value.length : isNonBlank(value))) return;
+      const tr = el("tr"), th = el("th", "", label); th.scope = "row"; tr.append(th);
+      values.forEach((value) => { const td = el("td"); if (Array.isArray(value)) { if (value.length) { const ul = el("ul"); value.forEach((item) => ul.append(el("li", "", valueText(item)))); td.append(ul); } else td.append(el("span", "basis-empty", "—")); } else td.textContent = isNonBlank(value) ? value : "—"; tr.append(td); });
+      tbody.append(tr);
+    });
+    table.append(thead, tbody); wrap.append(table); section.append(wrap);
   }
-  if (list(brief.candidate_routes).length) {
-    section.append(el("h4", "design-label", "候选建模路线")); const routes = el("div", "route-list");
-    const statuses = { candidate: "候选路线", recommended: "Agent 建议路线", blocked: "条件尚不满足" };
-    list(brief.candidate_routes).forEach((route) => {
-      const card = el("article", `route-card${route.status === "recommended" ? " recommended" : ""}`), routeHeading = el("div", "route-heading");
-      routeHeading.append(el("h4", "", route.name || route.id || "建模路线"), el("span", `badge ${route.status === "recommended" ? "badge-good" : route.status === "blocked" ? "badge-warn" : "badge-neutral"}`, statuses[route.status] || route.status || "待研究")); card.append(routeHeading);
-      if (list(route.physics).length) { const physics = el("div", "physics-chips"); route.physics.forEach((item) => physics.append(el("span", "", item))); card.append(physics); }
-      if (route.rationale) card.append(el("p", "design-copy", route.rationale));
-      if (route.tradeoffs) { card.append(el("h5", "route-detail-label", "取舍与代价"), el("p", "route-detail-copy", valueText(route.tradeoffs))); }
-      if (list(route.assumptions).length) { card.append(el("h5", "route-detail-label", "适用前提")); const assumptions = el("ul", "route-list-text"); route.assumptions.forEach((item) => assumptions.append(el("li", "", item))); card.append(assumptions); }
-      if (list(route.required_inputs).length) { card.append(el("h5", "route-detail-label", "还需要的输入")); const inputs = el("ul", "route-list-text"); route.required_inputs.forEach((item) => inputs.append(el("li", "", item))); card.append(inputs); }
-      routes.append(card);
-    }); section.append(routes);
+  const interpretations = list(brief.geometry_interpretation), assumptions = list(plan.assumptions);
+  if (brief.domain_strategy || interpretations.length || assumptions.length) {
+    const section = basisSection(container, "建模前提与假设");
+    if (brief.domain_strategy) section.append(el("p", "basis-lead", brief.domain_strategy));
+    const ul = el("ul", "basis-list");
+    assumptions.forEach((item) => ul.append(el("li", "", valueText(item))));
+    const labels = { observed: "Agent 引述 · 待核对", hypothesis: "几何假设 · 待验证", unknown: "几何 · 未知" };
+    interpretations.forEach((item) => { const li = el("li", "basis-geometry"); li.append(el("span", `badge ${item.status === "observed" ? "badge-neutral" : "badge-warn"}`, labels[item.status] || "几何 · 待核对"), el("span", "", ` ${item.statement || ""}`)); if (item.evidence) li.append(el("span", "basis-evidence-note", `依据：${item.evidence}`)); ul.append(li); });
+    if (ul.childElementCount) section.append(ul);
   }
-  renderSimplification(section, brief.simplification, session, readOnly);
-  if (list(brief.decisions).length) {
-    section.append(el("h4", "design-label", "关键建模决策")); const decisions = el("div", "decision-list");
-    list(brief.decisions).forEach((decision) => {
+  const decisions = list(brief.decisions);
+  if (decisions.length) {
+    const section = basisSection(container, "关键决策"), ul = el("ul", "basis-list basis-decisions");
+    decisions.forEach((decision) => {
       const decisionQuestion = list(session?.questions).find((question) => question.id.startsWith("decision_") && question.label === `是否采用此建议：${decision.topic || "建模决策"}` && question.reason === `${decision.recommendation || ""}\n依据与理由：${decision.reason || ""}`);
       const accepted = decisionQuestion && session?.answers?.[decisionQuestion.id] === "accept";
-      const card = el("article", `decision-card${decision.requires_confirmation && !accepted ? " pending" : ""}`), decisionHeading = el("div", "route-heading"); decisionHeading.append(el("h4", "", decision.topic || decision.id || "建模决策"));
-      if (decision.requires_confirmation) decisionHeading.append(el("span", `badge ${accepted ? "badge-good" : "badge-warn"}`, accepted ? "已接受的前提" : "需要你明确")); card.append(decisionHeading);
-      if (decision.recommendation) card.append(el("p", "decision-recommendation", decision.recommendation));
-      if (decision.reason) card.append(el("p", "design-copy", decision.reason));
-      if (list(decision.alternatives).length) card.append(el("p", "route-detail-copy", `其他选择：${decision.alternatives.join("；")}`));
-      appendCitations(card, decision.source_ids, session);
-      if (decision.requires_confirmation && !readOnly) { const button = el("button", "text-button decision-intent-link", accepted ? "查看当前选择 →" : "查看意图问题 →"); button.type = "button"; button.addEventListener("click", () => decisionQuestion ? revealQuestion(decisionQuestion.id) : selectTab("intent", true)); card.append(button); }
-      decisions.append(card);
-    }); section.append(decisions);
+      const li = el("li"), line = el("p", "basis-decision-line");
+      line.append(el("strong", "", `${decision.topic || decision.id || "建模决策"}：`), el("span", "", decision.recommendation || "未给出建议"));
+      if (decision.requires_confirmation) line.append(el("span", `badge ${accepted ? "badge-good" : "badge-warn"}`, accepted ? "已接受" : "待你确认"));
+      li.append(line);
+      const why = [decision.reason, list(decision.alternatives).length ? `其他选择：${decision.alternatives.join("；")}` : ""].filter(isNonBlank).join(" · ");
+      if (why) li.append(el("p", "basis-evidence-note", why));
+      appendCitations(li, decision.source_ids, session);
+      if (decision.requires_confirmation && !readOnly) { const button = el("button", "text-button decision-intent-link", accepted ? "查看你的选择" : "去确认"); button.type = "button"; button.addEventListener("click", () => decisionQuestion ? revealQuestion(decisionQuestion.id) : selectTab("intent", true)); li.append(button); }
+      ul.append(li);
+    }); section.append(ul);
   }
-  container.append(section);
+  if (list(plan.difficulties).length) { const section = basisSection(container, "风险与难点"), ul = el("ul", "basis-list"); plan.difficulties.forEach((item) => ul.append(el("li", "", valueText(item)))); section.append(ul); }
+  renderSimplification(container, brief.simplification, session, readOnly);
+  if (!container.childElementCount) container.append(el("p", "inline-empty", hasAgentPlan(session) ? "此方案没有记录路线与依据。" : "Agent 规划后，这里会列出候选路线、建模前提和关键决策。"));
 }
-function openPlanDisclosure(id) { const details = $(id); if (!details) return; details.open = true; details.scrollIntoView({ behavior: "smooth", block: "start" }); details.querySelector("summary")?.focus(); }
+function showPlanView(name, focus = false) {
+  state.planView = name === "design" ? "design" : "flow";
+  ["flow", "design"].forEach((view) => { const tab = $(`plan-tab-${view}`), panel = $(`plan-view-${view}`); if (!tab || !panel) return; const selected = view === state.planView; tab.setAttribute("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1; tab.classList.toggle("active", selected); panel.hidden = !selected; });
+  if (focus) { $(`plan-tab-${state.planView}`)?.focus(); $("plan-view-tabs")?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+}
 function renderOverview(container) {
   const session = state.session, plan = session?.plan || {}, brief = session?.design_brief || plan.design_brief || {}, routes = list(brief.candidate_routes), route = routes.find((item) => item.status === "recommended") || routes[0];
   const section = el("section", "overview-section"), routeLine = el("div", "overview-route"); section.id = "plan-overview";
   if (route) {
     routeLine.append(el("h3", "", route.name || "待确认的建模路线"), el("span", `badge ${route.status === "blocked" ? "badge-warn" : "badge-neutral"}`, route.status === "blocked" ? "受阻 · 待补充" : route.status === "recommended" ? "Agent 推荐 · 待核对" : "候选 · 待确认"));
     const others = routes.filter((item) => item !== route);
-    if (others.length) { const compare = el("button", "text-button", `另有 ${others.length} 条备选路线`); compare.type = "button"; compare.addEventListener("click", () => openPlanDisclosure("plan-design-details")); routeLine.append(compare); }
+    if (others.length) { const compare = el("button", "text-button", `另有 ${others.length} 条备选路线`); compare.type = "button"; compare.addEventListener("click", () => showPlanView("design", true)); routeLine.append(compare); }
   } else routeLine.append(el("h3", "", hasAgentPlan() ? "建模路线未注明" : "尚未形成建模路线"));
   section.append(routeLine);
   if (isNonBlank(plan.summary) && hasAgentPlan()) section.append(el("p", "plan-summary", plan.summary));
@@ -937,14 +958,49 @@ function renderSimulationFlow(container, steps, session = state.session) {
 }
 function renderPlan() {
   const container = $("plan-content"); container.replaceChildren(); const plan = state.session?.plan || {}; state.overviewNodes = null;
-  renderOverview(container); renderSimulationFlow(container, list(plan.steps));
-  const design = disclosure("路线比较与建模依据"); design.details.id = "plan-design-details";
-  if (plan.evidence_status) design.content.append(el("div", "evidence-status", `证据状态：${plan.evidence_status}`));
-  renderDesignBrief(design.content); container.append(design.details);
-  const riskCount = list(plan.assumptions).length + list(plan.difficulties).length + list(plan.missing_information).length;
-  if (riskCount) { const risks = disclosure(`前提、风险与待补充信息（${riskCount} 项）`); risks.details.id = "plan-risks-details"; appendList(risks.content, "建模前提", plan.assumptions); appendList(risks.content, "实施难点与注意事项", plan.difficulties, "difficulties-block"); appendList(risks.content, "仍缺少的信息", plan.missing_information, "missing-block"); container.append(risks.details); }
-  const trace = state.session?.research_trace || plan.research_trace;
-  if (trace && (typeof trace !== "object" || Object.keys(trace).length)) { const details = disclosure("研究过程与来源轨迹", "research-trace"); details.content.append(el("pre", "raw-snapshot", typeof trace === "string" ? trace : JSON.stringify(trace, null, 2))); container.append(details.details); }
+  renderOverview(container);
+  const tabs = el("div", "plan-view-tabs"); tabs.id = "plan-view-tabs"; tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "方案内容");
+  const views = [["flow", `建模流程${list(plan.steps).length ? ` · ${list(plan.steps).length} 步` : ""}`], ["design", "路线与依据"]];
+  views.forEach(([name, label], index) => { const tab = el("button", "plan-view-tab", label); tab.type = "button"; tab.id = `plan-tab-${name}`; tab.setAttribute("role", "tab"); tab.setAttribute("aria-controls", `plan-view-${name}`); tab.addEventListener("click", () => showPlanView(name)); tab.addEventListener("keydown", (event) => { if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return; event.preventDefault(); showPlanView(views[(index + 1) % 2][0], true); }); tabs.append(tab); });
+  const flow = el("section", "plan-view"), design = el("section", "plan-view");
+  flow.id = "plan-view-flow"; design.id = "plan-view-design"; [flow, design].forEach((panel, index) => { panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", `plan-tab-${views[index][0]}`); });
+  renderSimulationFlow(flow, list(plan.steps)); renderDesignBrief(design);
+  container.append(tabs, flow, design); showPlanView(state.planView);
+  renderPlanGaps(); renderResearchTrace();
+}
+function renderPlanGaps() {
+  const container = $("plan-gaps"); if (!container) return; container.replaceChildren();
+  const items = list(state.session?.plan?.missing_information).filter(isNonBlank); container.hidden = !items.length; if (!items.length) return;
+  container.append(el("h3", "", `Agent 标注的待补充信息（${items.length}）`), el("p", "side-intro", "规划时 Agent 记下的缺口。其中一部分已经变成上面的问题；缺少资料依据的，可以直接检索。"));
+  const ul = el("ul", "gap-list");
+  items.forEach((item) => { const li = el("li"); li.append(el("span", "", valueText(item))); if (/依据|手册|文献|资料|来源|案例/.test(valueText(item))) { const search = el("button", "text-button", "检索资料"); search.type = "button"; search.addEventListener("click", () => { openSearch(); $("search-query").value = valueText(item).replace(/^缺少|的?(手册|文献|资料)?依据$/g, ""); }); li.append(search); } ul.append(li); });
+  container.append(ul);
+}
+const traceStages = { conversation: "Agent 规划", interactive_edit: "修改步骤", search: "检索资料", read: "阅读来源", retrieve: "读取来源", formulation: "形成检索问题", questions: "整理问题", validation: "校验方案", readiness: "就绪检查", evidence_feedback: "依据反馈", research_budget: "研究预算", source_budget: "来源预算" };
+const traceStatuses = { completed: "完成", blocked_evidence: "依据不足", draft_validated: "草稿校验通过", steps_updated: "已更新步骤", budget_exhausted: "预算用尽", source_budget_exhausted: "来源数已达上限", failed: "失败", blocked: "受阻", unavailable: "来源不可用", rejected_invalid_provenance: "来源出处无效", rejected_empty_context: "上下文为空", partial_draft_retained: "保留部分草稿", research_requested: "请求补充研究", hypotheses: "形成假设", needs_replan: "需要重新规划", retired: "已撤回" };
+function renderResearchTrace() {
+  const container = $("research-trace"); if (!container) return; container.replaceChildren();
+  const raw = state.session?.research_trace ?? state.session?.plan?.research_trace, entries = Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : [];
+  container.append(el("h3", "", "研究轨迹"));
+  if (!entries.length) { container.append(el("p", "inline-empty", typeof raw === "string" && raw.trim() ? raw : "这一版还没有研究记录。")); return; }
+  const ol = el("ol", "trace-list");
+  entries.forEach((entry) => {
+    const li = el("li", `trace-item${/blocked|failed|exhausted|rejected|unavailable/.test(entry.status || "") ? " warn" : ""}`), head = el("p", "trace-head");
+    head.append(el("strong", "", traceStages[entry.stage] || entry.stage || "记录"), el("span", "", traceStatuses[entry.status] || entry.status || ""));
+    li.append(head);
+    const facts = [];
+    if (isNonBlank(entry.query)) facts.push(`检索“${entry.query}”${entry.kind ? `（${({ manual: "手册", case: "案例", code: "代码", all: "全部" })[entry.kind] || entry.kind}）` : ""}`);
+    if (Array.isArray(entry.result_ids)) facts.push(`命中 ${entry.result_ids.length} 条`);
+    if (isNonBlank(entry.source_id)) facts.push(`来源 ${entry.source_id}`);
+    if (Number.isFinite(entry.source_count)) facts.push(`引用 ${entry.source_count} 个来源`);
+    if (entry.physical_validation === "not_run") facts.push("未做物理验证");
+    if (facts.length) li.append(el("p", "trace-facts", facts.join(" · ")));
+    if (isNonBlank(entry.reason)) li.append(el("p", "trace-facts", entry.reason));
+    if (list(entry.evidence_gaps).length) li.append(el("p", "trace-gaps", `缺口：${entry.evidence_gaps.map(valueText).join("；")}`));
+    ol.append(li);
+  });
+  container.append(ol);
+  const details = disclosure("原始记录（排查用）", "trace-raw"); details.content.append(el("pre", "raw-snapshot", JSON.stringify(raw, null, 2))); container.append(details.details);
 }
 function renderSources() {
   const sources = list(state.session?.sources), container = $("source-list"); container.replaceChildren(); $("source-count").textContent = String(sources.length);
@@ -1152,8 +1208,8 @@ function renderVersionPreview(snapshot) {
   if (snapshot.goal) container.append(el("h4", "", "该版本目标"), el("p", "design-copy", snapshot.goal));
   if (plan.summary) container.append(el("p", "plan-summary", plan.summary));
   renderSimulationFlow(container, list(plan.steps), snapshot);
-  const design = disclosure("路线、决策与简化说明"); renderDesignBrief(design.content, snapshot, true); container.append(design.details);
-  const risks = disclosure("前提、难点与待补充信息"); appendList(risks.content, "建模前提", plan.assumptions); appendList(risks.content, "实施难点", plan.difficulties); appendList(risks.content, "仍缺少的信息", plan.missing_information); container.append(risks.details);
+  const design = disclosure("路线与依据"); renderDesignBrief(design.content, snapshot, true); container.append(design.details);
+  if (list(plan.missing_information).length) { const gaps = disclosure(`待补充信息（${plan.missing_information.length} 项）`); appendList(gaps.content, "仍缺少的信息", plan.missing_information); container.append(gaps.details); }
   const answers = disclosure(`该版本问题与回答（${list(snapshot.questions).length} 项）`), records = el("dl", "version-answer-list");
   list(snapshot.questions).forEach(question => { records.append(el("dt", "", question.label || question.id), el("dd", "", isNonBlank(snapshot.answers?.[question.id]) ? valueText(snapshot.answers[question.id]) : "未回答 · 保留为未知")); }); answers.content.append(records); container.append(answers.details);
   const sources = disclosure(`该版本引用（${list(snapshot.sources).length} 项）`);
