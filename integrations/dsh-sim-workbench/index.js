@@ -46,7 +46,8 @@ export function normalizeConfig(config = {}) {
 const OUTPUT = { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
 const text = { type: 'string' };
-const MODES = ['native', 'qmd_keyword', 'qmd_vector'];
+const MODES = ['qmd_keyword', 'qmd_vector'];
+const normalizeMode = mode => mode === 'native' || mode === 'qmd' ? 'qmd_keyword' : mode;
 const FEATURE_BRANCHES = ['geometry', 'mesh', 'physics', 'material', 'multiphysics', 'selection', 'study', 'solver', 'result', 'param', 'func', 'variable', 'misc'];
 const LIBRARY_TYPES = ['official-manuals', 'official-models', 'user-manuals', 'user-models'];
 const ACTIONS = ['add', 'scan', 'build', 'index', 'search', 'list', 'scope', 'enable_many', 'status', 'cancel', 'rebind', 'read', 'configuration', 'evidence', 'enable', 'disable', 'delete', 'restore', 'purge', 'models'];
@@ -56,7 +57,7 @@ const LIBRARY_ARGS = object({
   paths: { type: 'array', items: text }, limit: { type: 'integer', minimum: 1, maximum: 1000000 },
   shallow: { type: 'boolean' }, enrich: { type: 'boolean', description: '默认false；仅用户明确要求语义注释时true，会联网调用已配置的注释模型，可能使用Codex。' },
   modes: { type: 'array', items: { type: 'string', enum: MODES } }, query: text,
-  mode: { type: 'string', enum: [...MODES, 'qmd_hybrid'] }, library_ids: { type: 'array', items: text },
+  mode: { type: 'string', enum: MODES }, library_ids: { type: 'array', items: text },
   kind: { type: 'string', enum: ['all', 'manual', 'case', 'code'] }, feature_branch: { type: 'string', enum: FEATURE_BRANCHES },
   include_deleted: { type: 'boolean' }, enabled: { type: 'boolean' },
   confirmed: { type: 'boolean', description: '仅用户明确要求不可恢复删除该库时为true；原始文件保留。' },
@@ -101,8 +102,8 @@ export function libraryArgv(action, args = {}) {
     for (const value of args[key]) argv.push(flag, string(value, key));
   };
   const addModes = () => {
-    const values = args.modes ?? ['native'];
-    if (!Array.isArray(values) || !values.length || values.some(value => !MODES.includes(value))) throw new BridgeError('modes请选择native/qmd_keyword/qmd_vector。');
+    const values = Array.isArray(args.modes) ? [...new Set(args.modes.map(normalizeMode))] : args.modes ?? ['qmd_keyword'];
+    if (!Array.isArray(values) || !values.length || values.some(value => !MODES.includes(value))) throw new BridgeError('modes请选择qmd_keyword/qmd_vector。');
     argv.push('--modes', [...new Set(values)].join(','));
   };
   if (action === 'add') {
@@ -143,8 +144,8 @@ export function libraryArgv(action, args = {}) {
     argv.push(args.job_id);
   }
   else if (action === 'search') {
-    const mode = args.mode ?? 'native';
-    if (![...MODES, 'qmd_hybrid'].includes(mode)) throw new BridgeError('检索mode无效。');
+    const mode = normalizeMode(args.mode ?? 'qmd_keyword');
+    if (!MODES.includes(mode)) throw new BridgeError('检索mode无效。');
     if (args.kind !== undefined && !['all', 'manual', 'case', 'code'].includes(args.kind)) throw new BridgeError('检索kind无效。');
     if (args.feature_branch !== undefined && !FEATURE_BRANCHES.includes(args.feature_branch)) throw new BridgeError('feature_branch不是支持的建模分支。');
     argv.push(string(args.query, 'query'), '--mode', mode); addList('--library', 'library_ids'); addInt('--limit', 'limit', 8);
@@ -292,7 +293,7 @@ export class WorkbenchHost {
       add('create_workbench_plan', '显式创建新仿真方案并绑定当前DSH会话；已有绑定时先返回冲突，不覆盖原绑定。model_path可选，读取STEP/STP/MPH原件，不求解。', object({
         goal: { type: 'string', minLength: 8, maxLength: 12000 }, model_path: text,
       }, ['goal']), async (args, exec) => this.createPlan(state, args, exec.signal));
-      add('workbench_library', '资料库登记/扫描/构造/索引/查询/重绑定与证据读取。先scope查询轻量目录、分组与启停（包括关闭库），可按query/type筛选；enable_many用library_ids与enabled显式批量启停所选库，无需用户确认、不构建索引，按需选库不要自动全部启用。兼容enable/disable、可恢复delete/restore、不可恢复purge及只读models文件列表。构建默认覆盖登记目录全部文件，可显式limit小样本；index/build默认仅native，向量模式需显式选择。enrich默认关闭，仅用户明确要求时设true。delete保留原文件、历史引用与索引；purge需confirmed:true且用户明确确认不可恢复清除，仅适用已删除库，保留原文件及其它库副本。', object({
+      add('workbench_library', '资料库登记/扫描/构造/索引/查询/重绑定与证据读取。先scope查询轻量目录、分组与启停（包括关闭库），可按query/type筛选；enable_many用library_ids与enabled显式批量启停所选库，无需用户确认、不构建索引，按需选库不要自动全部启用。兼容enable/disable、可恢复delete/restore、不可恢复purge及只读models文件列表。构建默认覆盖登记目录全部文件，可显式limit小样本；index/build默认仅qmd_keyword，项目术语扩展后以OR执行一次BM25；qmd_vector默认关闭，需显式选择。enrich默认关闭，仅用户明确要求时设true。delete保留原文件、历史引用与索引；purge需confirmed:true且用户明确确认不可恢复清除，仅适用已删除库，保留原文件及其它库副本。', object({
         action: { type: 'string', enum: ACTIONS }, args: LIBRARY_ARGS,
       }, ['action']), async args => {
         if (this.stopping) throw new BridgeError('工作台正在停止。');

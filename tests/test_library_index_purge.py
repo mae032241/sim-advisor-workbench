@@ -16,6 +16,31 @@ from test_library_search import FakeEngineSearch, obj
 from qmd_fixtures import keyword_collection, keyword_insert, keyword_schema
 
 
+@pytest.mark.parametrize("compact", [False, True])
+@pytest.mark.parametrize("postings", [False, True])
+def test_object_cleanup_accepts_metadata_only_and_historical_fts_schemas(tmp_path, compact, postings):
+    from advisor import object_index
+    from advisor.library_index_purge import _clean_native
+    from test_object_index import historical
+
+    path = tmp_path / "objects.sqlite3"
+    with closing(sqlite3.connect(path)) as db, db:
+        historical(db, compact=compact)
+        if not postings:
+            db.execute("DROP TABLE object_fts")
+        retained = object_index.hydrate_object(db, "b")
+    result = _clean_native(path, "models")
+    assert result["removed"] == 1 and result["owned_schema"] and not result["empty"]
+    assert result["remaining_ids"] == {"b"}
+    with closing(sqlite3.connect(path)) as db:
+        assert object_index.owned_schema(db)
+        assert object_index.hydrate_object(db, "b") == retained
+        assert object_index.hydrate_object(db, "a") is None
+        assert object_index.has_legacy_fts(db) is postings
+        if postings:
+            assert db.execute("SELECT rowid FROM object_fts").fetchall() == [(200,)]
+
+
 def fixture(tmp_path):
     root = tmp_path / "search"
     search = FakeEngineSearch(root, preserve_history=True)
@@ -23,7 +48,7 @@ def fixture(tmp_path):
     manifests = []
     for number in (1, 2):
         deleted = obj("deleted-" + str(number), "deleted", text="PURGE_UNIQUE_SECRET_A_7159360_" + str(number))
-        manifests.append(search.build([deleted, kept], modes=["native", "qmd_keyword", "qmd_vector"], generation="generation-" + str(number)))
+        manifests.append(search.build([deleted, kept], modes=["qmd_keyword", "qmd_vector"], generation="generation-" + str(number)))
     desired = _hash(_json([kept["id"]]))[:24]
     return root, search, manifests, kept, desired
 
@@ -59,7 +84,7 @@ def test_purge_cleans_current_and_history_native_fts_and_qmd_without_touching_ot
         assert b"PURGE_UNIQUE_SECRET_A" not in native.read_bytes(), "Deleted payload must not remain in SQLite free pages/FTS segments"
         with closing(sqlite3.connect(native)) as db:
             assert db.execute("SELECT id FROM objects").fetchall() == [(kept["id"],)]
-            assert db.execute("SELECT o.id FROM object_fts f JOIN objects o ON o.rowid=f.rowid").fetchall() == [(kept["id"],)]
+            assert not db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'object_fts%'").fetchone()
         value = resolve_index_manifest(json.loads((directory / "manifest.json").read_text()), root)
         assert set(value["libraries"]) == {"retained"} and value["object_count"] == 1
         assert "mapping" not in value and "objects" not in value["representation"]
@@ -67,8 +92,8 @@ def test_purge_cleans_current_and_history_native_fts_and_qmd_without_touching_ot
         assert set(value["modes"]["qmd_vector"]["embedding_records"]) == {"retained"}
     current = search._load_active()
     assert current["generation"] == desired and current["corpus_hash"] == _hash(_json([kept]))
-    assert search.search("laminar", mode="native")[0]["id"] == kept["id"]
-    assert all(current["modes"][mode]["ready"] for mode in ("native", "qmd_keyword", "qmd_vector"))
+    assert search.search("laminar", mode="qmd_keyword")[0]["id"] == kept["id"]
+    assert all(current["modes"][mode]["ready"] for mode in ("qmd_keyword", "qmd_vector"))
     assert not (root / "purge-pending.json").exists() and not (root / "build-lease.json").exists()
 
 
@@ -100,7 +125,7 @@ def test_failure_after_manifest_cleanup_is_retryable_and_keeps_other_library_rea
     assert not search.lock.locked() and not (root / "build-lease.json").exists()
     # Retrying rereads all generations, including ones created after a failed
     # request; it must not trust only the journal's original directory list.
-    latest = search.build([obj("deleted-later", "deleted"), kept], modes=["native"], generation="later")
+    latest = search.build([obj("deleted-later", "deleted"), kept], modes=["qmd_keyword"], generation="later")
     result = purge_library_indexes(root, "deleted", generation=desired)
     assert result["active_generation_retargeted"]
     assert not (root / "purge-pending.json").exists()
@@ -142,8 +167,8 @@ def test_unrelated_generation_is_not_rewritten_and_manifests_are_read_once(tmp_p
     root = tmp_path / "search"
     search = FakeEngineSearch(root, preserve_history=True)
     kept = obj("kept", "retained")
-    untouched = search.build([kept], modes=["native"], generation="unrelated")
-    search.build([kept, obj("deleted", "deleted")], modes=["native"], generation="target")
+    untouched = search.build([kept], modes=["qmd_keyword"], generation="unrelated")
+    search.build([kept, obj("deleted", "deleted")], modes=["qmd_keyword"], generation="target")
     preserved = hashes(Path(untouched["directory"]))
     reads = {}
     original = module.read_manifest
@@ -251,7 +276,12 @@ def test_old_per_library_keyword_databases_remain_purgeable_after_shared_storage
         value = resolve_index_manifest(read_manifest(directory / 'manifest.json'), root)
         assert 'keyword_storage' not in value
         assert Path(value['libraries']['retained']['db_path']).parent.name == old['libraries']['retained']['key']
-    assert search.search('laminar', mode='native')[0]['id'] == kept['id']
+    current = search._load_active()
+    with closing(sqlite3.connect(current['libraries']['retained']['db_path'])) as db:
+        assert db.execute('SELECT count(*) FROM documents WHERE active=1').fetchone() == (1,)
+    with closing(sqlite3.connect(Path(current['directory']) / 'objects.sqlite3')) as db:
+        from advisor.object_index import hydrate_object
+        assert hydrate_object(db, kept['id']) == kept
 
 
 def test_index_tree_is_inventoried_once_without_resolving_every_child(tmp_path, monkeypatch):
@@ -390,7 +420,7 @@ def only_library_fixture(tmp_path, *, builds=3):
     root = tmp_path / "search"
     search = FakeEngineSearch(root, preserve_history=True)
     manifests = [search.build([obj("deleted-" + str(number), "deleted", "PURGE_LAST_LIBRARY_SECRET_" + str(number))],
-                              modes=["native", "qmd_keyword", "qmd_vector"], generation="only-" + str(number))
+                              modes=["qmd_keyword", "qmd_vector"], generation="only-" + str(number))
                  for number in range(builds)]
     runtime = root / "runtime"
     runtime.mkdir()
@@ -422,7 +452,7 @@ def test_last_library_purge_reclaims_empty_generations_pointers_and_generated_ru
     assert custom.read_bytes() == b"Independent corpus remains intact"
     assert original.read_bytes() == b"Original sources remain outside the index lifecycle"
     status = search.status()
-    assert not status["ready"] and not status["modes"]["native"]["ready"]
+    assert not status["ready"] and not status["modes"]["qmd_keyword"]["ready"]
     assert status["generation"] is None
     with pytest.raises(RuntimeError, match="not ready"):
         search.search("valve")
@@ -516,9 +546,9 @@ def test_empty_cleanup_keeps_unrecognized_generation_and_runtime_content(tmp_pat
 def test_empty_history_is_reclaimed_unless_referenced_by_a_retained_library(tmp_path, dependency):
     root = tmp_path / "search"
     search = FakeEngineSearch(root, preserve_history=True)
-    old = search.build([obj("deleted", "deleted")], modes=["native"], generation="old")
+    old = search.build([obj("deleted", "deleted")], modes=["qmd_keyword"], generation="old")
     keeper = obj("keeper", "retained", "Retained laminar valve flow")
-    current = search.build([keeper], modes=["native", "qmd_keyword"], generation="retained")
+    current = search.build([keeper], modes=["qmd_keyword"], generation="retained")
     if dependency:
         for path in (root / "active.json", root / "last-build.json", Path(current["directory"]) / "manifest.json"):
             value = read_manifest(path)
@@ -533,7 +563,7 @@ def test_empty_history_is_reclaimed_unless_referenced_by_a_retained_library(tmp_
     if dependency:
         assert b"lo-deleted" not in (Path(old["directory"]) / "objects.sqlite3").read_bytes()
     assert hashes(Path(current["directory"])) == retained_bytes
-    assert search.search("laminar", mode="native")[0]["id"] == keeper["id"]
+    assert search.search("laminar", mode="qmd_keyword")[0]["id"] == keeper["id"]
     assert search.search("laminar", mode="qmd_keyword")[0]["id"] == keeper["id"]
 
 
@@ -580,7 +610,7 @@ def test_empty_cleanup_retry_preserves_a_newer_generation_published_after_failur
         purge_library_indexes(root, "deleted", generation="empty-library")
     assert not (old / "objects.sqlite3").exists()
     keeper = obj("keeper", "retained", "Retained laminar flow")
-    current = search.build([keeper], modes=["native", "qmd_keyword"], generation="newer")
+    current = search.build([keeper], modes=["qmd_keyword"], generation="newer")
     preserved = hashes(Path(current["directory"]))
     pointers = {name: (root / name).read_bytes() for name in ("active.json", "last-build.json")}
 
@@ -590,3 +620,35 @@ def test_empty_cleanup_retry_preserves_a_newer_generation_published_after_failur
     assert hashes(Path(current["directory"])) == preserved
     assert all((root / name).read_bytes() == content for name, content in pointers.items())
     assert search.search("laminar")[0]["id"] == keeper["id"]
+
+
+def test_slim_object_cleanup_reads_compact_statistics_without_search_input(tmp_path):
+    from advisor import object_index
+    from advisor.library_index_purge import _clean_native
+    path = tmp_path / "objects.sqlite3"
+    with closing(sqlite3.connect(path)) as db, db:
+        object_index.create_schema(db)
+        for identity, library, size in [("gone", "deleted", 17), ("keep", "retained", 83)]:
+            item = obj(identity, library)
+            object_index.insert_object(db, item, "No persistent search text", {"indexed_characters": size, "truncated": library == "retained"}, "")
+        assert "search_input" not in {row[1] for row in db.execute("PRAGMA table_info(objects)")}
+    result = _clean_native(path, "deleted")
+    assert result["remaining_ids"] == {"lo-keep"}
+    assert result["representation_summary"] == {"indexed_objects": 1, "unindexed_objects": 0,
+                                               "indexed_characters": 83, "truncated_objects": 1}
+
+
+def test_purge_removes_only_owned_crashed_keyword_spools_in_existing_generations(tmp_path):
+    root, _, manifests, kept, desired = fixture(tmp_path)
+    temporary = []
+    for manifest in manifests:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = Path(manifest["directory"]) / (".qmd-keyword-inputs-" + "a" * 32 + ".sqlite3" + suffix)
+            path.write_bytes(b"Temporary build inputs of deleted and retained libraries")
+            temporary.append(path)
+    custom = Path(manifests[-1]["directory"]) / ".qmd-keyword-inputs-custom.sqlite3"
+    custom.write_bytes(b"Keep unrelated hidden attachment")
+    result = purge_library_indexes(root, "deleted", generation=desired)
+    assert all(not path.exists() for path in temporary)
+    assert custom.read_bytes() == b"Keep unrelated hidden attachment"
+    assert result["search_metadata_bytes_removed"] > 0

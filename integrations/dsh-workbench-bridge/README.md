@@ -11,8 +11,14 @@ The workbench must already be running. Registration uses the DSH Host PID,
 `backend: dsh`, and this Agent's ID as `conversation_id`. The plan ID is separate.
 The registration token stays in Host memory and is never returned to the model.
 
-Only this Agent receives the five planning tools and the workbench's returned
-instructions. Arguments cannot override the bound plan. The tools use the
+Only this Agent receives the server's current bound-tool catalog and returned
+instructions. The bridge requests `/api/tools?bound=true` and uses those exact
+descriptions and schemas, including `get_tool_contract` and future tools. This
+catalog excludes external mailbox administration and session/token arguments.
+Older servers without a bound catalog use the legacy tool allowlist. Tool
+contracts can be queried by input-data JSON pointer and paged with
+`offset`/`length`; contract lookup does not read source text or grant evidence.
+Arguments cannot override the bound plan. The tools use the
 authenticated `/external/tool` endpoint, retaining backend/model/conversation
 provenance. Saving a plan uses current revision and the existing backend rules.
 

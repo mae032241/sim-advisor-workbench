@@ -47,9 +47,12 @@ def refresh_links(db):
     db.execute('''INSERT OR IGNORE INTO tutorial_associations
       SELECT m.source_id,m.owner_library_id,min(d.citation_id),d.owner_library_id,
              'canonical_tutorial',m.source_sha256,'constructor-links/v1'
-      FROM tutorial_model_documents m JOIN active ma ON ma.citation_id=m.source_id
-      JOIN tutorial_document_sources d ON d.source_sha256=m.source_sha256
-      JOIN active da ON da.citation_id=d.citation_id
+      FROM tutorial_model_documents m
+      CROSS JOIN revisions mr ON mr.id=m.source_id AND mr.library_id=m.owner_library_id
+      CROSS JOIN active ma ON ma.library_id=mr.library_id AND ma.object_id=mr.object_id AND ma.citation_id=mr.id
+      CROSS JOIN tutorial_document_sources d ON d.source_sha256=m.source_sha256
+      CROSS JOIN revisions dr ON dr.id=d.citation_id AND dr.library_id=d.owner_library_id
+      CROSS JOIN active da ON da.library_id=dr.library_id AND da.object_id=dr.object_id AND da.citation_id=dr.id
       WHERE ma.library_id=m.owner_library_id AND da.library_id=d.owner_library_id
       AND NOT EXISTS(SELECT 1 FROM tutorial_associations old
                      WHERE old.source_id=m.source_id AND old.source_sha256=m.source_sha256
@@ -87,16 +90,19 @@ def links(store, source, *, limit=8):
         if not visible:
             return []
         owners = ','.join('?' for _ in visible)
+        # Keep the small document-hash set first. Otherwise SQLite can choose
+        # active's library prefix and walk every source before resolving links.
         rows = db.execute(f'''WITH documents AS (
           SELECT source_sha256 FROM tutorial_model_documents
           WHERE source_id IN ({placeholders}) AND owner_library_id=?
           UNION SELECT source_sha256 FROM tutorial_associations
           WHERE source_id IN ({placeholders}) AND source_library_id=?
         ) SELECT DISTINCT r.id,r.payload,d.category,
-          EXISTS(SELECT 1 FROM active ac WHERE ac.citation_id=r.id) AS current
-          FROM documents t JOIN tutorial_document_sources d ON d.source_sha256=t.source_sha256
-          JOIN revisions r ON r.id=d.citation_id AND r.library_id=d.owner_library_id
-          JOIN active a ON a.citation_id=r.id AND a.library_id=r.library_id
+          EXISTS(SELECT 1 FROM active ac WHERE ac.library_id=r.library_id
+                 AND ac.object_id=r.object_id AND ac.citation_id=r.id) AS current
+          FROM documents t CROSS JOIN tutorial_document_sources d ON d.source_sha256=t.source_sha256
+          CROSS JOIN revisions r ON r.id=d.citation_id AND r.library_id=d.owner_library_id
+          CROSS JOIN active a ON a.library_id=r.library_id AND a.object_id=r.object_id AND a.citation_id=r.id
           WHERE r.library_id IN ({owners})
           ORDER BY current DESC,CASE WHEN d.category=? THEN 0 ELSE 1 END,
                    json_extract(r.payload,'$.data.tutorial_order'),r.id LIMIT ?''',

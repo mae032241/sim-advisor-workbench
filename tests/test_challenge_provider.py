@@ -83,29 +83,25 @@ def wrapper(documents, **kwargs):
     return ChallengeKnowledgeProvider(FakeBase(documents), ["bracket_contact"], mode="qmd_vector", library_ids=["cases", "manuals"], **kwargs)
 
 
-def test_mixed_backends_allow_related_cases_and_generic_contact_with_audit():
+def test_search_only_uses_registered_qmd_and_does_not_call_legacy_manuals():
     provider = wrapper([modern(), modern("lo-thermal", "bracket_thermal"), manual()])
     hits = provider.search("短时热脉冲 接触 热阻", limit=8)
-    assert {d["id"] for d in hits} == {"lo-basic", "lo-thermal", "cs-contact"}
+    assert {d["id"] for d in hits} == {"lo-basic", "lo-thermal"}
     assert provider._base.calls[0]["query"] == "短时热脉冲 接触 热阻"
     assert provider._base.calls[0]["filters"] == {"mode": "qmd_vector", "library_ids": ["cases", "manuals"]}
-    assert provider._base.legacy.calls[0]["kind"] == "manual"
-    assert provider._base.legacy.calls[0]["filters"] == {"backend": "native"}
+    assert not provider._base.legacy.calls
     assert hits[0]["retrieval"]["backend"] == "qmd_vector"
-    lexical = next(d for d in hits if d["id"] == "cs-contact")
-    assert lexical["retrieval"]["backend"] == "native"
-    assert lexical["retrieval_backend"] == "native-html-hierarchy-sqlite-fts5"
     read = provider.get_document("lo-basic")
     assert provider.validate_source(read)
     audit = provider.audit
     assert any(e["event"] == "read" and e["source_id"] == "lo-basic" and e["query_id"] == 1 for e in audit)
     assert any(e["event"] == "candidate_read" and e["actual_backend"] == "qmd_vector" for e in audit)
-    assert {e["branch"] for e in audit if e["event"] == "search_branch"} == {"registered_libraries", "legacy_manuals"}
+    assert {e["branch"] for e in audit if e["event"] == "search_branch"} == {"registered_libraries"}
     audit.clear()
     assert provider.audit
     state = provider.status()["challenge"]
-    assert state["actual_backends_seen"] == ["native-html-hierarchy-sqlite-fts5", "qmd_vector"]
-    assert state["legacy_counts_are_unfiltered"]
+    assert state["actual_backends_seen"] == ["qmd_vector"]
+    assert not state["legacy_searchable"]
     assert "bracket_contact" not in json.dumps(provider.status())
 
 
@@ -281,3 +277,12 @@ def test_second_challenge_reference_cleanup_and_exact_family_boundary():
     assert not provider._forbidden_locator("COMSOL_Multiphysics/Fluid_Dynamics/micromixer2.mph")
     assert not provider._forbidden_locator("CFD_Module/Single-Phase_Flow/backstep.mph")
     assert not provider._forbidden_locator("COMSOL_Multiphysics/Fluid_Dynamics/cylinder_flow.mph")
+
+
+def test_historical_native_mode_is_only_a_qmd_keyword_alias():
+    base = FakeBase([modern(), manual()])
+    provider = ChallengeKnowledgeProvider(base, ["bracket_contact"], mode="native", library_ids=["cases"])
+    assert provider.mode == "qmd_keyword"
+    assert provider.search("mesh", filters={"mode": "native"})
+    assert base.calls[-1]["filters"]["mode"] == "qmd_keyword"
+    assert not base.legacy.calls

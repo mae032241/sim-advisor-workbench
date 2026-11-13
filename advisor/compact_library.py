@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import Counter, OrderedDict
 import hashlib
 import json
+import re
 from pathlib import Path
 import threading
 import tempfile
@@ -485,7 +486,17 @@ def configuration(authority, *, library_root, source_override=None, category=Non
     if source == "api" and not case.get("api", {}).get("counts", {}).get("runs"):
         raise ValueError("This compact case has no API observations; use source=xml for saved settings")
     bound, nodes, total = max(1, min(100, int(limit))), [], 0
-    for node in reader.iter_nodes():
+    # A token-delimited node locator is exact. Do not hydrate every unrelated
+    # node and all its properties just to select one primary key.
+    exact = re.fullmatch(r"compact:node/([0-9]+) ", node_path) if isinstance(node_path, str) else None
+    if exact:
+        try:
+            candidates = (reader.read_node(int(exact[1])),)
+        except KeyError:
+            candidates = ()
+    else:
+        candidates = reader.iter_nodes()
+    for node in candidates:
         if category and category not in {node["kind"], node.get("feature_branch")}:
             continue
         locator = f"compact:node/{node['id']} " + " ".join(str(node.get(key) or "") for key in ("tag", "kind", "label", "type"))

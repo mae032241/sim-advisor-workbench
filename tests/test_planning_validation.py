@@ -1,5 +1,6 @@
 """Actionable feedback for actual save failures, without weaker acceptance."""
 import copy
+import json
 
 import jsonschema
 import pytest
@@ -41,9 +42,9 @@ def test_save_shape_error_reports_missing_and_unexpected_names_without_values(tm
     args["design_brief"]["wrong_field"]={"private_value":"DO_NOT_ECHO_PAYLOAD"}
     with pytest.raises(ValueError) as caught:
         tools.call_public("save_plan",dict(args,session_id=task["id"]))
-    message=str(caught.value)
-    assert message.startswith("arguments.design_brief 字段不符合研究结果约定。")
-    assert "missing=['domain_strategy']" in message and "unexpected=['wrong_field']" in message
+    message=json.dumps(caught.value.to_dict(),ensure_ascii=False)
+    assert {(error['path'],error['code']) for error in caught.value.errors} == {
+        ('/design_brief/domain_strategy','required'),('/design_brief/wrong_field','additionalProperties')}
     assert "DO_NOT_ECHO_PAYLOAD" not in message and "private_value" not in message
     assert sessions.get(task["id"])["revision"]==1
 
@@ -54,7 +55,8 @@ def test_array_shape_error_points_to_the_exact_nested_item():
     value["candidate_routes"][1]["required_inputs"]= ["known", 123]
     with pytest.raises(ValueError) as caught:
         _check_shape(value,DESIGN_BRIEF_SCHEMA,"arguments.design_brief")
-    assert str(caught.value).startswith("arguments.design_brief.candidate_routes[1].required_inputs[1] 必须是有界文本。")
+    assert '"path": "/candidate_routes/1/required_inputs/1"' in str(caught.value)
+    assert '"type": "string"' in str(caught.value)
 
 
 @pytest.mark.parametrize("key,label_key", [("candidate_routes","name"),("decisions","topic")])
@@ -76,8 +78,8 @@ def test_question_id_feedback_has_index_and_exact_existing_regex():
     with pytest.raises(ValueError) as caught:
         _safe_question_list([question],[])
     message=str(caught.value)
-    assert message.startswith("Agent 问题 ID 不安全或无效。")
-    assert "questions[0].id" in message and SAFE_ID.pattern in message
+    assert message.startswith("questions[0] 字段不符合schema：")
+    assert '"path": "/id"' in message and SAFE_ID.pattern in message
     assert "BAD_SECRET" not in message
 
 
@@ -95,16 +97,24 @@ def test_empty_simplification_feedback_names_only_the_missing_nonblank_field(fie
     assert "."+other not in message
 
 
-def test_conditional_source_error_points_to_candidate_and_does_not_accept_fabricated_fix():
+def test_unobserved_conditional_downgrades_before_source_gate_and_still_rejects_fabricated_sources():
     value=draft()
     value["design_brief"]["simplification"]["candidates"]=[candidate(status="conditional",source_ids=[])]
-    with pytest.raises(ValueError) as caught:
-        validate(value)
-    message=str(caught.value)
-    assert message.startswith("有条件采用的简化策略必须有已读来源支持。")
-    assert "design_brief.simplification.candidates[0].source_ids" in message and "status=conditional" in message
+    validate(value)
+    assert value["design_brief"]["simplification"]["candidates"][0]["status"] == "needs_inspection"
     value["design_brief"]["simplification"]["candidates"][0]["source_ids"]=["cs-not-actually-read"]
     with pytest.raises(ValueError,match="未实际读取"):
+        validate(value)
+
+
+def test_geometry_supported_conditional_still_requires_real_method_source(monkeypatch):
+    import advisor.planning_validation as module
+    monkeypatch.setattr(module,'geometry_reference_catalog',lambda _model:[
+        {'ref':'body:body-abc','scope':'body','conditional_support':True}])
+    value=draft()
+    value['design_brief']['simplification']['candidates']=[candidate(
+        status='conditional',target_scope='body',geometry_fact_refs=['body:body-abc'])]
+    with pytest.raises(ValueError,match='source_ids.*status=conditional'):
         validate(value)
 
 

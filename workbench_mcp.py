@@ -155,7 +155,7 @@ class WorkbenchBridge:
 
 
 def create_server(bridge):
-    server = Server("comsol-workbench", version="1.0.0", instructions="工作台工具独立于 Agent 后端。可先查询资料库目录并按需要启用指定库，无需确认，不自动启用全部库。先检索再读取正文；保存方案须明确 session_id 与当前 revision。")
+    server = Server("comsol-workbench", version="1.0.0", instructions="工作台工具独立于 Agent 后端。复杂或不确定字段先用get_tool_contract按输入JSON pointer查询实际字段、枚举和语义；契约可分页读取，无需方案且不读取资料正文。可先查询资料库目录并按需要启用指定库，无需确认，不自动启用全部库。先检索再读取正文；保存方案须明确 session_id 与当前 revision。")
 
     @server.list_tools()
     async def list_tools():

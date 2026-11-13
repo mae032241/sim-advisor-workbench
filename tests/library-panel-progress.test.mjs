@@ -54,7 +54,7 @@ function running(overrides = {}) {
 async function fixture(job = running(), options = {}) {
   const timer = clock(), calls = [], document = {createElement: tag => new Element(tag, document)}, target = document.createElement('main');
   const libraries = [{id: 'idle', name: '其他资料库', type: 'official-manuals', roots: []}, {id: 'models', name: '模型试点', type: 'user-models', roots: []}];
-  const api = {snapshot: {libraries, jobs: job ? [job] : [], indexes: {modes: {native: {ready: true}, qmd_keyword: {ready: false}, qmd_vector: {ready: false}}}}, getJob: async () => api.snapshot.jobs[0], build: running({status: 'queued', stage: 'queued', progress: {completed: null, total: null, unit: 'files', current_file: null, detail: ''}})};
+  const api = {snapshot: {libraries, jobs: job ? [job] : [], indexes: {modes: {native: {ready: true}, qmd_keyword: {ready: true}, qmd_vector: {ready: false}}}}, getJob: async () => api.snapshot.jobs[0], build: running({status: 'queued', stage: 'queued', progress: {completed: null, total: null, unit: 'files', current_file: null, detail: ''}})};
   api.getLibraries = async url => ({...api.snapshot, libraries: api.snapshot.libraries.filter(library => url.includes('include_deleted=1') || !library.deleted_at)});
   api.evaluationSets = {sets: [], set_count: 0, model_count: 0, read_only: true, index_rebuilt: false, retrieval_enabled: false, access_token: 'web-access-token'};
   api.getEvaluationSets = async () => api.evaluationSets;
@@ -312,12 +312,12 @@ test('returning to evaluation during a pending access change ignores an old libr
   assert.equal(f.get('.lp-evaluation-access-toggle').disabled, false); f.controller.destroy();
 });
 
-test('embedding is globally off even with ready legacy vectors; native and keyword work without any weights', async () => {
+test('embedding is globally off even with ready legacy vectors; keyword works without any weights and native is hidden', async () => {
   const f = await fixture(null);
   f.api.snapshot.indexes.modes = {native: {ready: true}, qmd_keyword: {ready: true}, qmd_vector: {ready: true}};
   await f.controller.refresh(true);
   assert.equal(f.get('.lp-embedding-status').textContent, 'QMD embedding：未启用');
-  assert.match(f.get('.lp-embedding-hint').textContent, /原生与 QMD 关键词检索无需权重/);
+  assert.match(f.get('.lp-embedding-hint').textContent, /QMD 关键词检索无需权重/);
   const vector = f.get('.lp-vector-choice').querySelector('input'), form = f.get('.lp-search-form'), mode = form.querySelector('select'), query = form.querySelector('input');
   assert.equal(vector.disabled, true); assert.equal(vector.checked, false);
   assert.equal(mode.options.find(option => option.value === 'qmd_vector').disabled, true);
@@ -332,7 +332,7 @@ test('embedding is globally off even with ready legacy vectors; native and keywo
   assert.equal(f.calls.some(call => call.url.endsWith('/build')), false); assert.match(f.get('.lp-message').textContent, /先在 QMD 控制中手动启用 embedding/);
   vector.checked = false; f.get('.lp-mode-choices').querySelectorAll('input').find(check => check.value === 'qmd_keyword').checked = true;
   await f.get('.lp-build-form').emit('submit');
-  assert.deepEqual(JSON.parse(f.calls.find(call => call.url.endsWith('/build')).settings.body).modes, ['native', 'qmd_keyword']);
+  assert.deepEqual(JSON.parse(f.calls.find(call => call.url.endsWith('/build')).settings.body).modes, ['qmd_keyword']);
   assert.equal(embeddingPosts(f).length, 0); assert.equal(f.calls.some(call => /download|model-info|model-status/.test(call.url)), false); f.controller.destroy();
 });
 
@@ -447,7 +447,7 @@ test('global unfinished-vector cleanup is visible without libraries and scans on
   assert.equal(dialog.open, true); assert.match(dialog.textContent, /所有资料库.*当前及历史/);
   assert.match(dialog.textContent, /不受所选资料库限制/); assert.match(dialog.textContent, /尚未发布为可用索引的向量文件/);
   assert.match(dialog.textContent, /不会清理其他历史索引或解析产物/);
-  for (const kept of ['原生索引', '关键词索引', '已发布 / 已就绪向量索引', '原始模型与手册', '已入库内容', 'GGUF 模型']) assert.ok(dialog.textContent.includes(kept));
+  for (const kept of ['QMD 关键词索引', '已发布 / 已就绪向量索引', '原始模型与手册', '已入库内容', 'GGUF 模型']) assert.ok(dialog.textContent.includes(kept));
   assert.match(f.get('.lp-cleanup-summary').textContent, /3 个文件，14.0 MiB.*2 个索引代次/);
   assert.match(f.get('.lp-cleanup-status').textContent, /1 项保留.*无法安全归属/s);
   assert.equal(cleanupPosts(f).length, 0);
@@ -731,8 +731,8 @@ test('an unknown completed count or inconsistent counters never create an invent
 
 test('poll follows stages, preserves a terminal partial result against stale refresh and stops timers', async () => {
   const original = running(), f = await fixture(original);
-  f.api.getJob = async () => running({stage: 'indexing_native', progress: {completed: null, total: null, unit: 'indexes', current_file: null, detail: ''}, updated_at: new Date(epoch + 1000).toISOString()});
-  await f.timer.tick(2500); assert.equal(f.get('.lp-progress-stage').textContent, '构建原生索引');
+  f.api.getJob = async () => running({stage: 'indexing_keyword', progress: {completed: null, total: null, unit: 'indexes', current_file: null, detail: ''}, updated_at: new Date(epoch + 1000).toISOString()});
+  await f.timer.tick(2500); assert.equal(f.get('.lp-progress-stage').textContent, '构建关键词索引');
   f.api.getJob = async () => running({status: 'partial', stage: 'finished', finished_at: new Date(epoch + 5000).toISOString(), elapsed_seconds: 128, progress: {completed: null, total: null, unit: 'indexes'}, failed_indexes: ['qmd_vector'], updated_at: new Date(epoch + 5000).toISOString()});
   // The list endpoint can be an older snapshot than the individual job response.
   f.api.snapshot.jobs = [original]; await f.timer.tick(2500);
@@ -776,15 +776,16 @@ test('switching libraries does not let an old job response replace the selected 
 test('submitting a build reveals the persistent card immediately and starts read-only polling', async () => {
   const f = await fixture(null); f.controller.selectLibrary('models'); await flush();
   const modes = f.get('.lp-mode-choices').querySelectorAll('input');
-  assert.deepEqual(modes.filter(input => input.checked).map(input => input.value), ['native']);
-  assert.equal(modes.find(input => input.value === 'qmd_keyword').checked, false);
+  assert.deepEqual(modes.filter(input => input.checked).map(input => input.value), ['qmd_keyword']);
+  assert.equal(modes.find(input => input.value === 'qmd_keyword').checked, true);
+  assert.ok(!modes.some(input => input.value === 'native'));
   assert.equal(modes.find(input => input.value === 'qmd_vector').checked, false);
   assert.match(f.get('.lp-vector-help').textContent, /先在 QMD 控制中手动启用 embedding/);
   await f.get('.lp-build-form').emit('submit');
   assert.equal(f.get('.lp-live-progress').getAttribute('data-status'), 'queued');
   assert.equal(f.get('.lp-live-progress').scrolled, true);
   assert.equal(f.calls.filter(call => call.settings.method === 'POST').length, 1);
-  const submitted = f.calls.find(call => call.settings.method === 'POST'); assert.deepEqual(JSON.parse(submitted.settings.body).modes, ['native']);
+  const submitted = f.calls.find(call => call.settings.method === 'POST'); assert.deepEqual(JSON.parse(submitted.settings.body).modes, ['qmd_keyword']);
   assert.equal(f.get('.lp-stage-progress').hasAttribute('value'), false); f.controller.destroy();
 });
 
@@ -1060,7 +1061,7 @@ test('model discovery lists every file read-only and build submits the entire li
   await f.get('.lp-build-form').emit('submit');
   const post = f.calls.find(call => call.settings.method === 'POST');
   assert.equal(post.url, '/api/libraries/models/build');
-  assert.deepEqual(JSON.parse(post.settings.body), {deep: false, enrich: false, modes: ['native']});
+  assert.deepEqual(JSON.parse(post.settings.body), {deep: false, enrich: false, modes: ['qmd_keyword']});
   f.controller.destroy();
 });
 
@@ -1073,7 +1074,7 @@ test('model extraction defaults offline and explicit deep choice reaches the bui
     assert.match(f.get('.lp-extraction-help').textContent, selected === 'deep' ? /本机 COMSOL/ : /无需 COMSOL/);
     await f.get('.lp-build-form').emit('submit');
     const post = f.calls.find(call => call.url.endsWith('/build'));
-    assert.deepEqual(JSON.parse(post.settings.body), {deep: selected === 'deep', enrich: false, modes: ['native']});
+    assert.deepEqual(JSON.parse(post.settings.body), {deep: selected === 'deep', enrich: false, modes: ['qmd_keyword']});
     f.controller.destroy();
   }
 });
@@ -1096,7 +1097,7 @@ test('manual libraries build registered documents without requesting models or p
   await f.get('.lp-build-form').emit('submit');
   const post = f.calls.find(call => call.settings.method === 'POST');
   assert.equal(post.url, '/api/libraries/idle/build');
-  assert.deepEqual(JSON.parse(post.settings.body), {deep: false, enrich: false, modes: ['native']});
+  assert.deepEqual(JSON.parse(post.settings.body), {deep: false, enrich: false, modes: ['qmd_keyword']});
   f.controller.destroy();
 });
 
@@ -1411,7 +1412,7 @@ test('destroying a pending purge confirmation sends nothing and cannot delete on
 
 test('list and job polling request compact summaries; closed index details never stringify large manifests', async () => {
   let bodyReads = 0;
-  const manifest = {generation: 'g1', modes: {native: {ready: true}}, mapping: {huge: 'raw mapping'}, representation: {huge: 'raw representation'}};
+  const manifest = {generation: 'g1', modes: {qmd_keyword: {ready: true}}, mapping: {huge: 'raw mapping'}, representation: {huge: 'raw representation'}};
   Object.defineProperty(manifest.mapping, 'sentinel', {enumerable: true, get() { bodyReads++; return 'must not serialize'; }});
   const f = await fixture(running({indexes: manifest}));
   assert.equal(f.calls[0].url, '/api/libraries?view=summary');
@@ -1426,7 +1427,7 @@ test('list and job polling request compact summaries; closed index details never
 });
 
 test('four identical active job polls do not rebuild cards, collapse details or detach focus', async () => {
-  const f = await fixture(running({indexes: {generation: 'g1', modes: {native: {ready: true}}}}));
+  const f = await fixture(running({indexes: {generation: 'g1', modes: {qmd_keyword: {ready: true}}}}));
   const jobs = f.get('.lp-jobs'), card = f.get('.lp-job'), details = f.get('.lp-job-index-details');
   details.open = true; await details.emit('toggle');
   const summary = details.querySelector('summary'), content = details.querySelector('pre'); summary.focus();
@@ -1450,13 +1451,13 @@ test('four identical active job polls do not rebuild cards, collapse details or 
 });
 
 test('real stage and index progress update in place without replacing expanded job details', async () => {
-  const f = await fixture(running({indexes: {generation: 'g1', modes: {native: {ready: false}}}}));
+  const f = await fixture(running({indexes: {generation: 'g1', modes: {qmd_keyword: {ready: false}}}}));
   const card = f.get('.lp-job'), heading = card.querySelector('.lp-job-heading'), details = card.querySelector('.lp-job-index-details');
   details.open = true; await details.emit('toggle');
   const summary = details.querySelector('summary'), pre = details.querySelector('pre'); summary.focus();
   f.api.getJob = async () => running({stage: 'indexing_keyword', completed: 3,
     progress: {completed: 3, total: 6, unit: 'objects', detail: '索引资料章节', current_file: 'D:/current.html'},
-    indexes: {generation: 'g2', modes: {native: {ready: true}}}, updated_at: new Date(epoch + 1000).toISOString()});
+    indexes: {generation: 'g2', modes: {qmd_keyword: {ready: true}}}, updated_at: new Date(epoch + 1000).toISOString()});
   await f.timer.tick(2500);
   assert.equal(f.get('.lp-job'), card); assert.equal(card.querySelector('.lp-job-heading'), heading);
   assert.match(heading.textContent, /构建关键词索引/); assert.match(card.textContent, /已处理 3 \/ 4/);
@@ -1723,5 +1724,18 @@ test('API enrichment permits retrieval toggles while keeping delete and reconstr
   assert.match(f.get('.lp-library-action-help').textContent,/当前已关闭/);
   assert.equal(f.get('.lp-library-enable').disabled,false);
   assert.equal(f.get('.lp-cancel-build').disabled,false);
+  f.controller.destroy();
+});
+
+
+test('an old native-only manifest never creates a ready QMD index or hides QMD build choices', async () => {
+  const f = await fixture(null);
+  f.api.snapshot.indexes = {modes: {native: {ready: true}}};
+  await f.controller.refresh(); f.controller.selectLibrary('models'); await flush();
+  const modes = f.get('.lp-mode-choices').querySelectorAll('input');
+  assert.deepEqual(modes.map(input => input.value), ['qmd_keyword', 'qmd_vector']);
+  assert.deepEqual(modes.filter(input => input.checked).map(input => input.value), ['qmd_keyword']);
+  assert.ok(f.get('.lp-indexes').textContent.includes('尚无此模式的可用索引'));
+  assert.ok(!f.get('.lp-indexes').textContent.includes('原生层级检索'));
   f.controller.destroy();
 });

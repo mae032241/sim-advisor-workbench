@@ -19,6 +19,11 @@ def main():
     parser.add_argument("--url",help="本机工作台HTTP地址；默认data/server.json")
     commands=parser.add_subparsers(dest="command",required=True)
     commands.add_parser("list",help="列出工具及JSON schema")
+    contract=commands.add_parser("contract",help="分页读取工具真实输入契约；不需要方案或读取资料正文")
+    contract.add_argument("tool")
+    contract.add_argument("--path",help="输入数据的JSON pointer，例如 /design_brief/simplification/candidates/0/status")
+    contract.add_argument("--offset",type=int)
+    contract.add_argument("--length",type=int)
     scope=commands.add_parser("scope",help="查询资料库目录与当前启停，不需要方案")
     scope.add_argument("--query")
     scope.add_argument("--type",choices=["official-manuals","official-models","user-manuals","user-models"])
@@ -43,6 +48,9 @@ def main():
             if not isinstance(value,dict):
                 raise ValueError("工具参数需为JSON对象。")
             payload=json.dumps({"name":args.name,"arguments":value},ensure_ascii=False).encode("utf-8")
+        elif args.command=="contract":
+            value={key:getattr(args,key) for key in ("tool","path","offset","length") if getattr(args,key) is not None}
+            payload=json.dumps({"name":"get_tool_contract","arguments":value},ensure_ascii=False).encode("utf-8")
         elif args.command in {"scope","enable-many"}:
             name="get_library_scope" if args.command=="scope" else "set_libraries_enabled"
             value={key:getattr(args,key) for key in ("query","type") if getattr(args,key) is not None} if args.command=="scope" else {"library_ids":args.library_ids,"enabled":args.enabled=="true"}

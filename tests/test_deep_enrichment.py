@@ -187,9 +187,9 @@ def test_batch_builds_indexes_once_after_all_publications_and_never_embeds(tmp_p
         return {'generation': generation, 'modes': {mode: {'ready': True} for mode in modes}}
     monkeypatch.setattr('advisor.library_search.LibrarySearch.build', indexed)
     done = deep_enrichment.run_batch(store, planned['checkpoint'], builder=builder)
-    assert done['status'] == 'completed' and calls == [['native', 'qmd_keyword']]
+    assert done['status'] == 'completed' and calls == [['qmd_keyword']]
     deep_enrichment.run_batch(store, planned['checkpoint'], builder=builder)
-    assert calls == [['native', 'qmd_keyword']]
+    assert calls == [['qmd_keyword']]
     with pytest.raises(ValueError, match='embeddings'):
         deep_enrichment.run_batch(store, planned['checkpoint'], modes=['qmd_vector'])
 

@@ -33,14 +33,11 @@ def legacy_fixture(fixture, tmp_path):
     return LibraryKnowledgeProvider(kb, store.root), kb, store, registry, package
 
 
-def test_legacy_holdouts_are_filtered_before_candidate_limit_without_starving_topk(legacy_fixture):
-    provider, kb, _store, registry, package = legacy_fixture
-    assert kb.search("mesh sizing", limit=1)[0]["relative_path"].startswith(package)
-    assert package + "/held-0.html" in registry["exclusions"]["document_relpaths"]
-    hits = provider.search("mesh sizing", limit=1, filters={"exclude_relpath_prefixes": []})
-    assert len(hits) == 1
-    assert hits[0]["relative_path"] == "com.comsol.help.comsol/open.html"
-    assert "SECRET_HELDOUT" not in json.dumps(hits)
+def test_retired_legacy_search_cannot_bypass_registered_qmd_requirement(legacy_fixture):
+    provider, kb, _store, _registry, _package = legacy_fixture
+    with patch.object(kb, "search", side_effect=AssertionError("Legacy retrieval must not run")):
+        with pytest.raises(RuntimeError, match="QMD index"):
+            provider.search("mesh sizing", limit=1)
 
 
 def test_old_legacy_ids_cannot_read_body_or_other_sections_in_same_tutorial(legacy_fixture):
@@ -56,7 +53,8 @@ def test_old_legacy_ids_cannot_read_body_or_other_sections_in_same_tutorial(lega
         provider.get_document(source_id(package + "/held-194.html"))
     store.set_enabled_many(["models", "manuals", "copy"], True)
     assert not provider.source_available(identity)
-    assert provider.search("mesh sizing", limit=1)[0]["relative_path"] == "com.comsol.help.comsol/open.html"
+    with pytest.raises(RuntimeError, match="QMD index"):
+        provider.search("mesh sizing", limit=1)
 
 
 def test_legacy_links_and_validation_cannot_expose_heldout_tutorial(legacy_fixture):
@@ -72,21 +70,23 @@ def test_legacy_links_and_validation_cannot_expose_heldout_tutorial(legacy_fixtu
     assert document["related_links"] == [{"href": "open.html", "title": "Generic manual"}]
 
 
-def test_policy_is_rechecked_after_slow_legacy_search_and_stale_catalog_fails_closed(legacy_fixture):
+def test_policy_is_rechecked_after_legacy_body_read_and_stale_catalog_fails_closed(legacy_fixture):
     provider, kb, store, registry, _package = legacy_fixture
-    original = kb.search
+    original = kb.get_document
+    identity = source_id("com.comsol.help.comsol/open.html")
 
     def change_policy(*args, **kwargs):
-        results = original(*args, **kwargs)
+        result = original(*args, **kwargs)
         registry["exclusions"]["document_relpaths"].append("com.comsol.help.comsol/open.html")
         write_registry(store.root, registry)
-        return results
+        return result
 
-    with patch.object(kb, "search", side_effect=change_policy):
-        assert provider.search("mesh sizing") == []
+    with patch.object(kb, "get_document", side_effect=change_policy):
+        with pytest.raises(PermissionError):
+            provider.get_document(identity)
     insert(store, "fresh", asset="models:ordinary-new.mph", source_hash="new", group="fresh-group")
     with pytest.raises(EvaluationPolicyStale):
-        provider.search("mesh sizing")
+        provider.get_document(identity)
 
 
 def test_purging_other_library_refreshes_watermark_and_keeps_holdouts(fixture):

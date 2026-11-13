@@ -61,6 +61,17 @@ def resolve_index_manifest(manifest, search_root):
     if storage not in (None, SHARED_KEYWORD_STORAGE):
         raise ValueError("Unsupported index keyword_storage")
     root = Path(search_root).resolve()
+    # A shared keyword database is named by every collection. Check each
+    # physical locator once within this conversion, without retaining filesystem
+    # decisions between calls (a junction may change before the next query).
+    checked = {}
+
+    def inside(parts):
+        parts = tuple(parts)
+        if parts not in checked:
+            checked[parts] = _inside(root, parts)
+        return checked[parts]
+
     directory = value.get("directory")
     libraries = value.get("libraries", {})
     if not isinstance(libraries, dict):
@@ -78,7 +89,7 @@ def resolve_index_manifest(manifest, search_root):
         directory_parts = _parts(directory)
         if _absolute(directory) or len(directory_parts) != 2 or directory_parts[0] != "generations" or not _SEGMENT.fullmatch(directory_parts[1]):
             raise ValueError("Relative index directory must be generations/<generation-directory>")
-    value["directory"] = _inside(root, directory_parts)
+    value["directory"] = inside(directory_parts)
     for item in libraries.values():
         if not isinstance(item, dict):
             raise ValueError("Each index library must be an object")
@@ -100,7 +111,7 @@ def resolve_index_manifest(manifest, search_root):
                     raise ValueError(f"Legacy {field} does not match its generation/library layout")
             elif _absolute(item[field]) or actual != expected:
                 raise ValueError(f"Relative {field} does not match its generation/library layout")
-            item[field] = _inside(root, expected)
+            item[field] = inside(expected)
         for field in _REUSE_DIRECTORIES:
             if field not in item:
                 continue
@@ -113,7 +124,7 @@ def resolve_index_manifest(manifest, search_root):
                 raise ValueError(f"Relative {field} must stay inside the search root")
             if len(actual) != 2 or actual[0] != "generations" or not _SEGMENT.fullmatch(actual[1]):
                 raise ValueError(f"Invalid {field} generation directory")
-            item[field] = _inside(root, actual)
+            item[field] = inside(actual)
     # This is a runtime copy. Its absolute locators must not be misinterpreted
     # as serialized relative locators on a second conversion.
     value.pop("path_schema", None)

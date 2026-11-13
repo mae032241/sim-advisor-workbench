@@ -8,6 +8,10 @@ let agentPanel = null;
 let statusRead = null;
 const apiControllers = new Set();
 let sourceRead = null, sourceSearch = null, searchRequest = 0, sourceTechnicalData = null;
+const caseGuide = globalThis.SimAdvisorCaseGuide?.mount(document.getElementById("source-case-guide"), {
+  call: async (name, args, signal) => (await api("/api/tools/call", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name, arguments: args}), signal})).result,
+  openSource: id => showSource(id),
+});
 let versionsState = null;
 let examplesRenderKey = null, sessionsRenderKey = null, systemRenderKey = null, corpusRenderKey = null;
 let managementRenderKey = null;
@@ -386,7 +390,7 @@ function systemStatusCards(status, session, agent) {
   const qmd = services.qmd || {}, indexes = qmd.library_indexes || status?.corpus?.library_indexes;
   const component = qmd.component_available ?? qmd.installed ?? (qmd.available === true ? true : undefined);
   const modeStates = { queued: "等待构建", running: "构建中", building: "构建中", indexing: "构建中", interrupted: "已中断", cancelled: "已中断", cancel_requested: "正在中断", not_requested: "未构建（按需）", not_built: "未构建", unavailable: "未就绪", missing: "未构建", stale: "已失效", error: "失败", failed: "失败", partial: "部分就绪", ready: "就绪标记待核验" };
-  const modes = [["native", "原生检索 · native"], ["qmd_keyword", "关键词 · qmd_keyword"], ["qmd_vector", "向量 · qmd_vector"]].map(([id, title]) => {
+  const modes = [["qmd_keyword", "QMD 关键词 · qmd_keyword"], ["qmd_vector", "QMD 向量 · qmd_vector"]].map(([id, title]) => {
     const mode = indexes?.modes?.[id];
     const rawError = mode?.error ? valueText(mode.error) : "";
     const translated = /^Build owner exited before this mode completed/.test(rawError) ? "构建进程已退出，该模式未完成；已完成的模式仍可使用。" : /^This request did not resume the unfinished mode/.test(rawError) ? "本次操作未续建先前未完成的索引；不会自动重新开始。" : null;
@@ -403,7 +407,7 @@ function systemStatusCards(status, session, agent) {
   // Modern registered-library modes take precedence over the legacy full-manual
   // verification flag, including when speaking to an older server.
   const visibilityDetail = visibility ? `\n资料库：启用 ${visibility.enabled_library_count ?? "未报告"} · 关闭 ${visibility.disabled_library_count ?? "未报告"} · 已删除 ${visibility.deleted_library_count ?? "未报告"}。启停不改变已保存的索引。` : "";
-  cards.push({ id: "qmd", title: "资料库检索 · QMD", label: indexes ? qmdLabel : qmd.status_label || qmdLabel, tone: !noEnabledLibraries && component !== false && (keywordReady || vectorReady) ? "good" : "neutral", mode: `组件：${component === true ? "已安装 / 已配置" : component === false ? "未配置" : "未报告"}`, detail: (qmd.status_label && qmd.detail ? qmd.detail : "以下是注册资料库的三种独立模式；未构建或已中断的向量索引不影响已就绪的原生与关键词检索。") + visibilityDetail, modes });
+  cards.push({ id: "qmd", title: "资料库检索 · QMD", label: indexes ? qmdLabel : qmd.status_label || qmdLabel, tone: !noEnabledLibraries && component !== false && (keywordReady || vectorReady) ? "good" : "neutral", mode: `组件：${component === true ? "已安装 / 已配置" : component === false ? "未配置" : "未报告"}`, detail: (qmd.status_label && qmd.detail ? qmd.detail : "以下是注册资料库的 QMD 关键词和可选向量模式；向量默认关闭，不影响已就绪的关键词检索。") + visibilityDetail, modes });
   const planner = services.planner || {};
   const disabled = ["none", "disabled", "not-configured"].includes(planner.mode);
   cards.push({ id: "planner", title: "工作台托管 Agent", label: planner.status_label || (disabled ? "托管后端已关闭" : planner.available === true ? "可用" : planner.available === false ? "不可用" : "状态未报告"), tone: planner.available === true ? "good" : "neutral", mode: planner.mode ? `托管调试后端：${planner.mode}` : "托管调试后端：未报告", detail: `${planner.detail || "此处仅报告工作台可启动的托管后端。"}\n当前方案的外部会话连接单独显示，不由此状态推断。` });
@@ -474,7 +478,7 @@ function renderCorpus(corpus) {
   const externalIndexing = corpus.building === true || corpus.indexing === true || ["building", "indexing", "running"].includes(corpus.status) || ["building", "indexing", "running"].includes(corpus.state);
   setIfChanged($("index-progress"), "hidden", !(state.indexBusy || externalIndexing));
   const progress = corpus.progress || corpus.message || corpus.detail;
-  textIfChanged($("index-progress-text"), typeof progress === "string" ? progress : "正在读取本地文档并更新索引，请稍候…");
+  textIfChanged($("index-progress-text"), typeof progress === "string" ? progress : "正在更新已登记资料库的 QMD 关键词索引，请稍候…");
   setIfChanged($("build-index"), "disabled", Boolean(state.operation) || state.indexBusy || externalIndexing);
 }
 
@@ -833,8 +837,53 @@ function renderMeshGuidance(container, step) {
   guidance.append(el("p", "question-group-note", "以下摘自本节点已有内容；未列明的网格要求保留为待补充。"));
   groups.forEach(([label], index) => { const section = el("section", "mesh-guidance-section"), matches = buckets[index]; section.append(el("h4", "mesh-guidance-title", label)); if (matches.length) { const ul = el("ul", "simple-list"); matches.forEach((text) => ul.append(el("li", "", text))); section.append(ul); } else section.append(el("p", "mesh-guidance-empty", "尚需补充：本分区未列出具体要求，可核对下方完整原文。")); guidance.append(section); }); container.append(guidance);
 }
+function renderSettingsDisclosure(container, settings, session, title, className, note = "") {
+  if (!settings.length) return;
+  const section = disclosure(`${title}（${settings.length} 项）`, className);
+  container.append(section.details);
+  lazyContent(section.details, () => {
+    if (note) section.content.append(el("p", "flow-reading-note", note));
+    section.content.append(el("p", "flow-reading-note", "以下为 Agent 整理的方案设置与来源记录；采用状态不代表已实施或已完成物理验证。"));
+    const statuses = { adopted: "方案采用", adapted: "调整采用", alternative: "备选", unresolved: "待明确", not_applicable: "不适用" };
+    const contexts = { source_text: "文档原文", case_configuration: "案例配置", navigation: "导航线索" };
+    settings.forEach((setting, index) => {
+      const row = el("section", "flow-section plan-setting"), heading = el("h4", "plan-setting-heading");
+      heading.append(el("span", "", isNonBlank(setting.setting) ? valueText(setting.setting) : `设置 ${index + 1}`), el("span", "badge badge-neutral", statuses[setting.status] || valueText(setting.status)));
+      row.append(heading);
+      const values = el("dl", "flow-key-points plan-setting-values");
+      const field = (label, value, required = false) => { if (!required && !isNonBlank(value)) return; const item = el("div", "step-detail"); item.append(el("dt", "step-detail-label", label), el("dd", "step-detail-value", isNonBlank(value) ? valueText(value) : "尚需补充")); values.append(item); };
+      field("对应要求", setting.requirement, true); field("建议值", setting.proposed_value, true);
+      field("迁移依据", setting.transfer_rationale); field("原因", setting.reason); field("缺口", setting.gap);
+      row.append(values);
+      const references = el("div", "plan-setting-sources"); references.append(el("h4", "", "来源记录"));
+      const refs = list(setting.source_refs);
+      if (!refs.length) references.append(el("p", "inline-empty", "未关联来源记录。"));
+      refs.forEach((reference) => {
+        if (!reference || typeof reference !== "object") return;
+        const record = el("div", "plan-setting-source"), source = list(session?.sources).find((item) => item.id === reference.source_id);
+        if (source && source.availability?.readable !== false) record.append(citationButton(reference.source_id, session));
+        record.append(el("span", "", `${source?.title ? valueText(source.title) + " · " : ""}${valueText(reference.source_id)}`));
+        if (source?.availability?.readable === false) record.append(el("span", "muted", " · 来源已关闭或删除，引用记录保留"));
+        const evidence = el("dl", "flow-key-points");
+        [["依据类型", contexts[reference.context] || valueText(reference.context)], ["定位", reference.locator], ["来源记载值", reference.stated_value]].forEach(([label, value]) => { const item = el("div", "step-detail"); item.append(el("dt", "step-detail-label", label), el("dd", "step-detail-value", valueText(value))); evidence.append(item); });
+        record.append(evidence); references.append(record);
+      });
+      row.append(references); section.content.append(row);
+    });
+  });
+}
+function renderStepSettings(container, step, session = state.session) {
+  if (!isNonBlank(step.id)) return;
+  const settings = list(session?.plan_settings).filter((row) => row && list(row.step_ids).includes(step.id));
+  renderSettingsDisclosure(container, settings, session, "设置与依据", "flow-settings");
+}
+function renderUnmappedSettings(container, steps, session = state.session) {
+  const stepIds = new Set(steps.map((step) => step.id).filter(isNonBlank));
+  const settings = list(session?.plan_settings).filter((row) => row && !list(row.step_ids).some((id) => stepIds.has(id)));
+  renderSettingsDisclosure(container, settings, session, "未采用与待处理设置", "flow-unmapped-settings", "以下记录尚未对应到当前流程环节，保留原记录与状态供核对。");
+}
 function renderSimulationFlow(container, steps, session = state.session) {
-  if (!steps.length) { container.append(el("p", "inline-empty", "尚未形成实施流程。先完成 Agent 规划，再逐环节核对。")); return; }
+  if (!steps.length) { container.append(el("p", "inline-empty", "尚未形成实施流程。先完成 Agent 规划，再逐环节核对。")); renderUnmappedSettings(container, steps, session); return; }
   container.append(el("h3", "plan-block-title", `仿真流程 · ${steps.length} 个环节`), el("p", "flow-reading-note", "按方案步骤阅读；前置条件见各节点，当前步骤均待实施。"));
   const flow = el("ol", "simulation-flow");
   steps.forEach((step, index) => {
@@ -849,11 +898,12 @@ function renderSimulationFlow(container, steps, session = state.session) {
     const action = el("section", "flow-section"); action.append(el("h4", "", "实施指南"), el("p", "step-action", step.action || "尚需补充")); original.append(action); renderStepKeyPoints(original, step);
     const difficulty = el("section", "flow-section flow-difficulty"); difficulty.append(el("h4", "", "难点解析"), el("p", "flow-difficulty-copy", step.difficulty || "尚需补充")); body.append(difficulty);
     const checks = el("section", "flow-section"); checks.append(el("h4", "", "验收与检查")); if (list(step.checks).length) { const ul = el("ul", "step-checks"); step.checks.forEach((check) => ul.append(el("li", "", check))); checks.append(ul); } else checks.append(el("p", "inline-empty", "尚需补充验收要求。")); (mesh ? original : body).append(checks);
+    renderStepSettings(body, step, session);
     const dependencies = el("div", "flow-dependencies"); dependencies.append(el("span", "", "明确依赖："));
     if (!list(step.depends_on).length) dependencies.append(el("span", "dependency-note", "未列出前置步骤"));
     list(step.depends_on).forEach((id) => { const dependency = steps.find((candidate) => candidate.id === id), link = el("button", "citation flow-dependency", dependency ? `${id} · ${dependency.title}` : `${id}（未找到对应节点）`); link.type = "button"; link.addEventListener("click", () => { const target = Array.from(flow.children).find((node) => node.dataset.stepId === id); if (!target) return; target.querySelector("details").open = true; target.scrollIntoView({ behavior: "smooth", block: "center" }); target.querySelector("summary")?.focus({ preventScroll: true }); }); dependencies.append(link); }); body.append(dependencies); appendCitations(body, step.source_ids, session);
     details.append(summary, body); item.append(details); flow.append(item);
-  }); container.append(flow);
+  }); container.append(flow); renderUnmappedSettings(container, steps, session);
 }
 function renderPlan() {
   const container = $("plan-content"); container.replaceChildren(); const plan = state.session?.plan || {}; state.overviewNodes = null;
@@ -1125,7 +1175,7 @@ function openSystem() { renderSystem(); openDialog("system-dialog"); refreshStat
 function updateAgentState(agent) { if (state.session && agent?.session_id && agent.session_id !== state.session.id) return; state.agent = state.session ? agent : null; syncConfirmation(); syncRefine(); syncVersionControls(); if ($("system-dialog").open) renderSystem(); }
 function openSearch() { openDialog("search-dialog"); if (!$("search-query").value && state.session) $("search-query").value = state.session.goal || ""; $("search-query").focus(); }
 async function showSource(id) {
-  sourceRead?.abort(); const controller = new AbortController(); sourceRead = controller;
+  caseGuide?.reset(); sourceRead?.abort(); const controller = new AbortController(); sourceRead = controller;
   const request = ++state.sourceRequest; openDialog("source-dialog"); $("source-title").textContent = "正在读取来源…"; $("source-meta").replaceChildren(); $("source-official-link").hidden = true; $("source-body").className = "document-text"; $("source-body").textContent = "正在读取索引中保存的文档内容…";
   $("source-related").replaceChildren(); $("source-related").hidden = true;
   sourceTechnicalData = null; $("source-technical").open = false; $("source-technical").hidden = true; $("source-technical-body").textContent = "";
@@ -1138,6 +1188,7 @@ async function showSource(id) {
     const url = safeURL(source.url); if (url) { $("source-official-link").href = url; $("source-official-link").hidden = false; }
     $("source-body").textContent = source.text || "该来源未提供可预览正文。";
     renderRelatedSources(source);
+    if (source.type === "model_case") caseGuide?.show(source.id);
     sourceTechnicalData = source; $("source-technical").hidden = !source.evidence && !Object.keys(source.coverage || {}).length;
   } catch (error) { if (request !== state.sourceRequest || error.name === "AbortError") return; $("source-title").textContent = "来源读取失败"; $("source-body").textContent = errorMessage(error); $("source-body").className = "document-text source-error"; }
   finally { if (sourceRead === controller) sourceRead = null; }
@@ -1175,17 +1226,20 @@ async function searchSources(event) {
   sourceSearch?.abort(); const controller = new AbortController(); sourceSearch = controller; const request = ++searchRequest;
   $("search-submit").disabled = true; $("search-status").textContent = "正在查询本地文档索引…"; $("search-results").replaceChildren();
   try {
-    const params = new URLSearchParams({ q: query, kind: $("search-kind").value, limit: "8" });
-    const branch = $("search-feature-branch").value; if (branch) params.set("feature_branch", branch);
-    const result = await api(`/api/search?${params}`, {signal: controller.signal}); if (request !== searchRequest) return; const results = list(result.results);
+    const kind = $("search-kind").value;
+    const params = new URLSearchParams({ q: query, kind, limit: "8" });
+    const branch = $("search-feature-branch").value; if (branch && kind !== "case") params.set("feature_branch", branch);
+    const result = kind === "case"
+      ? (await api("/api/tools/call", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name: "search_cases", arguments: {query}}), signal: controller.signal})).result
+      : await api(`/api/search?${params}`, {signal: controller.signal}); if (request !== searchRequest) return; const results = list(result.results);
     $("search-status").textContent = results.length ? `找到 ${results.length} 条相关结果。请核对版本、章节和适用条件。` : "未找到匹配内容。可调整关键词，或在引擎与知识库状态中更新索引。";
     results.forEach((source) => { const card = el("article", "search-result"), button = el("button", "search-result-title", source.title || source.id); button.type = "button"; button.addEventListener("click", () => showSource(source.id)); card.append(button, el("p", "", source.excerpt || "打开查看来源内容")); const path = Array.isArray(source.section_path) ? source.section_path.join(" › ") : source.section_path; card.append(el("div", "source-topline", [kindLabels[source.kind] || source.kind, source.version ? `COMSOL ${source.version}` : null, path].filter(Boolean).join(" · "))); $("search-results").append(card); });
   } catch (error) { if (request === searchRequest && error.name !== "AbortError") $("search-status").textContent = `检索失败：${errorMessage(error)}`; }
   finally { if (request === searchRequest) { sourceSearch = null; $("search-submit").disabled = false; } }
 }
 async function buildIndex() {
-  if (state.operation || state.indexBusy) return; state.indexBusy = true; $("index-progress").hidden = false; $("index-progress-text").textContent = "正在读取本地文档并构建索引，完成前请保持页面打开…"; $("build-index").disabled = true;
-  try { const result = await post("/api/index/build", {}); state.indexResult = result; renderCorpus(result); const failures = list(result.last_build?.errors); const hasError = Boolean(result.error) || failures.length > 0; notice(hasError ? `索引构建已返回，但存在错误：${result.error || failures.map(valueText).join("；")}` : result.ready ? `文档索引已就绪 · ${result.document_count ?? result.count ?? "未知"} 个文档。` : "索引操作已返回，但文档库尚未就绪。请检查文档目录与状态说明。", hasError || !result.ready); await refreshStatus(true); }
+  if (state.operation || state.indexBusy) return; state.indexBusy = true; $("index-progress").hidden = false; $("index-progress-text").textContent = "正在更新已登记资料库的 QMD 关键词索引，完成前请保持页面打开…"; $("build-index").disabled = true;
+  try { const result = await post("/api/index/build", {}); state.indexResult = result; renderCorpus(result); const failures = list(result.last_build?.errors); const hasError = Boolean(result.error) || failures.length > 0; notice(hasError ? `索引构建已返回，但存在错误：${result.error || failures.map(valueText).join("；")}` : result.ready ? `QMD 关键词索引已就绪 · ${result.object_count ?? result.document_count ?? result.count ?? "未知"} 个文档。` : "索引操作已返回，但 QMD 关键词索引尚未就绪。请检查运行组件和资料库索引状态。", hasError || !result.ready); await refreshStatus(true); }
   catch (error) { notice(`索引构建失败：${errorMessage(error)}`, true); $("corpus-status").append(el("p", "source-error", errorMessage(error))); }
   finally { state.indexBusy = false; renderCorpus(state.status?.corpus || state.indexResult); }
 }
@@ -1247,7 +1301,12 @@ agentPanel = window.SimAdvisorAgentPanel?.mount($("agent-panel"), {
   }
 }) || null;
 $("search-form").addEventListener("submit", searchSources);
-$("source-dialog").addEventListener("close", () => { state.sourceRequest++; sourceRead?.abort(); sourceRead = null; });
+$("search-kind").addEventListener("change", () => {
+  const overview = $("search-kind").value === "case";
+  $("search-feature-branch").disabled = overview;
+  $("search-feature-branch").title = overview ? "案例发现只检索概要；打开案例后按实现环节查设置。" : "";
+});
+$("source-dialog").addEventListener("close", () => { caseGuide?.reset(); state.sourceRequest++; sourceRead?.abort(); sourceRead = null; });
 $("source-technical").addEventListener("toggle", renderSourceTechnical);
 $("search-dialog").addEventListener("close", () => { searchRequest++; sourceSearch?.abort(); sourceSearch = null; $("search-submit").disabled = false; });
 $("build-index").addEventListener("click", buildIndex);

@@ -19,7 +19,7 @@ from test_library_search import FakeEngineSearch, obj
 
 def history(root, count=2):
     search = FakeEngineSearch(root, preserve_history=True)
-    manifests = [search.build([obj(str(number))], modes=["native"], generation="g" + str(number))
+    manifests = [search.build([obj(str(number))], modes=["qmd_keyword"], generation="g" + str(number))
                  for number in range(count)]
     for manifest in manifests:
         os.utime(manifest["directory"], (time.time() - 86400, time.time() - 86400))
@@ -52,18 +52,18 @@ def test_successful_builds_remove_only_unused_search_generations(tmp_path, monke
             path.write_bytes(b"keep this evidence")
     before = {path: path.read_bytes() for path in protected}
     search = LibrarySearch(root)
-    first = search.build([obj("first")], modes=["native"], generation="first")
+    first = search.build([obj("first")], modes=["qmd_keyword"], generation="first")
     size = sum(path.stat().st_size for path in Path(first["directory"]).rglob("*") if path.is_file())
     original = index_retention.prune_index_generations
     def locked(*args, **kwargs):
         assert search.lock.locked() and (root / "build-lease.json").exists()
         return original(*args, **kwargs)
     monkeypatch.setattr(index_retention, "prune_index_generations", locked)
-    second = search.build([obj("second")], modes=["native"], generation="second")
+    second = search.build([obj("second")], modes=["qmd_keyword"], generation="second")
     assert second["retention"]["retained_recent_generations"] == 1
     assert Path(first["directory"]).exists()
     os.utime(first["directory"], (time.time() - 86400, time.time() - 86400))
-    third = search.build([obj("third")], modes=["native"], generation="third")
+    third = search.build([obj("third")], modes=["qmd_keyword"], generation="third")
     assert third["retention"]["state"] == "completed"
     assert third["retention"]["removed_generations"] == 1
     assert third["retention"]["removed_bytes"] == size
@@ -76,7 +76,7 @@ def test_successful_builds_remove_only_unused_search_generations(tmp_path, monke
 def test_completed_noop_can_reclaim_legacy_history_without_rebuilding(tmp_path):
     _, (first, second) = history(tmp_path)
     search = FakeEngineSearch(tmp_path)
-    result = search.build([obj("1")], modes=["native"], generation="g1")
+    result = search.build([obj("1")], modes=["qmd_keyword"], generation="g1")
     assert result["unchanged"] and search.calls == []
     assert result["retention"]["removed_generations"] == 1
     assert not Path(first["directory"]).exists() and Path(second["directory"]).exists()
@@ -84,7 +84,7 @@ def test_completed_noop_can_reclaim_legacy_history_without_rebuilding(tmp_path):
 
 def test_retention_accepts_shared_keyword_database_and_counts_each_physical_file_once(tmp_path):
     search = LibrarySearch(tmp_path, preserve_history=True)
-    old = search.build([obj('a', 'first'), obj('b', 'second')], modes=['native'], generation='old')
+    old = search.build([obj('a', 'first'), obj('b', 'second')], modes=['qmd_keyword'], generation='old')
     directory = Path(old['directory'])
     old['keyword_storage'] = 'shared-collections-v1'
     for item in old['libraries'].values():
@@ -93,11 +93,34 @@ def test_retention_accepts_shared_keyword_database_and_counts_each_physical_file
         (directory / ('qmd-keyword.sqlite3' + suffix)).write_bytes(b'owned shared keyword bytes' * 7)
     store(search, old)
     size = sum(path.stat().st_size for path in directory.rglob('*') if path.is_file())
-    current = search.build([obj('current')], modes=['native'], generation='current')
+    current = search.build([obj('current')], modes=['qmd_keyword'], generation='current')
     os.utime(directory, (time.time() - 86400, time.time() - 86400))
     result = prune(search, current)
     assert result['state'] == 'completed' and result['removed_generations'] == 1
     assert result['removed_bytes'] == size and not directory.exists()
+
+
+def test_retention_accepts_immutable_context_dependencies_and_refuses_similar_unowned_names(tmp_path):
+    from advisor.case_context_dependencies import mark_generation_dependencies
+    search, (old, current) = history(tmp_path)
+    old = mark_generation_dependencies(tmp_path, old, {"case-0": {
+        "case_id": "case-0", "library_id": "models",
+        "qmd_path": "lib_" + "a" * 20 + "/case-0.md",
+        "source_refs": [{"id": "source-0", "library_id": "manuals"}]}})
+    store(search, old)
+    directory = Path(old["directory"])
+    similar = directory / "case-context-dependencies-unowned.sqlite3"
+    similar.write_bytes(b"do not infer snapshot ownership from a prefix")
+    os.utime(directory, (time.time() - 86400, time.time() - 86400))
+    result = prune(search, current)
+    assert result["state"] == "partial" and result["removed_generations"] == 0
+    assert similar.exists() and directory.exists()
+    similar.unlink()
+    os.utime(directory, (time.time() - 86400, time.time() - 86400))
+    size = sum(path.stat().st_size for path in directory.rglob("*") if path.is_file())
+    result = prune(search, current)
+    assert result["state"] == "completed" and result["removed_generations"] == 1
+    assert result["removed_bytes"] == size and not directory.exists()
 
 
 def test_explicit_directory_aliases_are_protected_transitively(tmp_path):
@@ -125,20 +148,20 @@ def test_last_build_pointer_is_an_independent_protection_root(tmp_path):
 @pytest.mark.parametrize("outcome", ["failed", "cancelled"])
 def test_failed_or_cancelled_build_does_not_prune_retained_indexes(tmp_path, monkeypatch, outcome):
     search = FakeEngineSearch(tmp_path)
-    first = search.build([obj("first")], modes=["native"], generation="first")
+    first = search.build([obj("first")], modes=["qmd_keyword"], generation="first")
     def unexpected(*args, **kwargs):
         pytest.fail("Incomplete builds must not invoke retention")
     monkeypatch.setattr(index_retention, "prune_index_generations", unexpected)
     if outcome == "failed":
         search.fail_embed = True
-        result = search.build([obj("second")], modes=["native", "qmd_vector"], generation="second")
-        assert result["modes"]["native"]["ready"] and not result["modes"]["qmd_vector"]["ready"]
+        result = search.build([obj("second")], modes=["qmd_keyword", "qmd_vector"], generation="second")
+        assert result["modes"]["qmd_keyword"]["ready"] and not result["modes"]["qmd_vector"]["ready"]
     else:
         def progress(value):
-            if value["stage"] == "indexing_native" and value["progress"]["completed"]:
+            if value["stage"] == "indexing_objects" and value["progress"]["completed"]:
                 raise BuildCancelled()
         with pytest.raises(BuildCancelled):
-            search.build([obj("second")], modes=["native"], generation="second", on_progress=progress)
+            search.build([obj("second")], modes=["qmd_keyword"], generation="second", on_progress=progress)
     assert Path(first["directory"]).exists()
     assert len(list((tmp_path / "generations").iterdir())) == 2
 
@@ -218,8 +241,8 @@ def test_gc_failure_is_nonfatal_and_does_not_claim_removal(tmp_path, monkeypatch
     def locked(*args, **kwargs):
         raise PermissionError("old index is locked")
     monkeypatch.setattr(index_retention.shutil, "rmtree", locked)
-    current = search.build([obj("new")], modes=["native"], generation="new")
-    assert current["modes"]["native"]["ready"]
+    current = search.build([obj("new")], modes=["qmd_keyword"], generation="new")
+    assert current["modes"]["qmd_keyword"]["ready"]
     assert current["retention"]["state"] == "partial"
     assert current["retention"]["removed_generations"] == current["retention"]["removed_bytes"] == 0
     assert "old index is locked" in current["retention"]["warnings"][0]
@@ -229,14 +252,14 @@ def test_gc_failure_is_nonfatal_and_does_not_claim_removal(tmp_path, monkeypatch
 
 def test_inflight_old_query_survives_two_rapid_publications(tmp_path):
     reader = FakeEngineSearch(tmp_path)
-    old = reader.build([obj("old")], modes=["native", "qmd_keyword"], generation="old")
+    old = reader.build([obj("old")], modes=["qmd_keyword"], generation="old")
     os.utime(old["directory"], (time.time() - 86400, time.time() - 86400))
     writer = LibrarySearch(tmp_path)
     receipts = []
     def publish(request):
         if request["op"] == "shared_keyword":
             for generation in ("middle", "new"):
-                receipts.append(writer.build([obj(generation)], modes=["native"], generation=generation))
+                receipts.append(writer.build([obj(generation)], modes=["qmd_keyword"], generation=generation))
     reader.observer = publish
     hits = reader.search("valve", mode="qmd_keyword")
     assert hits[0]["id"] == "lo-old"
@@ -251,7 +274,7 @@ def test_retirement_timestamp_failure_preserves_history_and_build_success(tmp_pa
     def denied(*args, **kwargs):
         raise PermissionError("cannot mark retirement")
     monkeypatch.setattr(index_retention.os, "utime", denied)
-    current = search.build([obj("new")], modes=["native"], generation="new")
+    current = search.build([obj("new")], modes=["qmd_keyword"], generation="new")
     assert current["ready"] and current["retention"]["state"] == "skipped"
     assert "cannot mark retirement" in current["retention_warnings"][0]
     assert Path(old["directory"]).exists()
@@ -261,7 +284,7 @@ def test_unexpected_retention_error_preserves_success_with_unknown_counts(tmp_pa
     def broken(*args, **kwargs):
         raise RuntimeError("maintenance failed")
     monkeypatch.setattr(index_retention, "prune_index_generations", broken)
-    built = LibrarySearch(tmp_path).build([obj("new")], modes=["native"], generation="new")
+    built = LibrarySearch(tmp_path).build([obj("new")], modes=["qmd_keyword"], generation="new")
     assert built["ready"] and built["retention"]["state"] == "failed"
     assert built["retention"]["removed_bytes"] is None
     assert "maintenance failed" in built["retention"]["warnings"][0]
@@ -269,16 +292,28 @@ def test_unexpected_retention_error_preserves_success_with_unknown_counts(tmp_pa
 @pytest.mark.parametrize('shared', [True, False])
 def test_shared_reader_grace_is_one_query_deadline_not_one_per_library(tmp_path, shared):
     search=FakeEngineSearch(tmp_path, preserve_history=True)
-    first=search.build([obj(str(i), 'library-'+str(i)) for i in range(50)],modes=['native'],generation='old-many')
+    first=search.build([obj(str(i), 'library-'+str(i)) for i in range(50)],modes=['qmd_keyword'],generation='old-many')
     if not shared:
         first.pop('keyword_storage')
         for item in first['libraries'].values():
             item.pop('collection')
             item['db_path']=str(Path(first['directory'])/item['key']/'qmd-keyword.sqlite3')
         store(search,first,pointers=True)
-    current=search.build([obj('new')],modes=['native'],generation='current')
+    current=search.build([obj('new')],modes=['qmd_keyword'],generation='current')
     os.utime(first['directory'],(time.time()-215,time.time()-215))
     result=prune(search,current)
     assert result['state']=='completed'
     assert result['removed_generations']==int(shared)
     assert Path(first['directory']).exists() is (not shared)
+
+
+def test_crashed_keyword_spools_are_owned_only_in_retired_generation_cleanup(tmp_path):
+    search, (old, current) = history(tmp_path)
+    for manifest in (old, current):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = Path(manifest["directory"]) / (".qmd-keyword-inputs-" + "c" * 32 + ".sqlite3" + suffix)
+            path.write_bytes(b"temporary input")
+    os.utime(old["directory"], (time.time() - 86400, time.time() - 86400))
+    result = prune(search, current)
+    assert result["removed_generations"] == 1 and not Path(old["directory"]).exists()
+    assert len(list(Path(current["directory"]).glob(".qmd-keyword-inputs-*"))) == 4

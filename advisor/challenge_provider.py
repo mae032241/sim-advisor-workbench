@@ -1,8 +1,8 @@
 """Read-only, auditable corpus boundary for geometry-only held-out challenges.
 
 This is an evaluation boundary, not an index mutation.  Registered, active objects
-use the requested engine; the separate legacy branch exposes generic manuals via
-native retrieval only.  Every read is checked, including direct historical IDs.
+use the requested QMD mode. Archived legacy sources are readable for historical
+references only and are never searched. Every read is checked, including direct IDs.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import re
 import threading
 import unicodedata
 from urllib.parse import unquote
+from .query_terms import normalize_mode
 
 
 _IDENTITY_KEYS = {"relative_path", "source_path", "model_path", "tutorial_path", "asset_key", "url", "source_uri", "uri", "path", "package"}
@@ -49,13 +50,11 @@ class ChallengeKnowledgeProvider:
     ``excluded_paths`` accepts canonical case stems or source paths.  A stem
     excludes that tutorial package and its suffixed assets across doc versions.
     Caller filters can narrow the pinned libraries, never expand them or change
-    the engine.  An explicit library filter omits the legacy branch, matching
-    LibraryKnowledgeProvider's existing filter semantics.
+    the QMD mode. Search only covers the pinned registered libraries.
     """
 
-    def __init__(self, base, excluded_paths, excluded_terms=None, mode="native", library_ids=None):
-        if mode not in {"native", "qmd_keyword", "qmd_vector"}:
-            raise ValueError("Unsupported challenge retrieval mode")
+    def __init__(self, base, excluded_paths, excluded_terms=None, mode="qmd_keyword", library_ids=None):
+        mode = normalize_mode(mode)
         if not isinstance(excluded_paths, list) or not excluded_paths or any(not isinstance(p, str) or not p.strip() for p in excluded_paths):
             raise ValueError("A held-out challenge requires nonempty excluded source paths")
         if excluded_terms is not None and (not isinstance(excluded_terms, list) or any(not isinstance(t, str) or not t.strip() for t in excluded_terms)):
@@ -81,7 +80,7 @@ class ChallengeKnowledgeProvider:
         self._text_patterns = self._family_patterns + [re.compile(r"(?<!\w)" + r"[\W_]+".join(map(re.escape, re.split(r"[_-]+", name))) + r"(?!\w)", re.I) for name in self._families]
         self._text_patterns += [re.compile(re.escape(unicodedata.normalize("NFKC", t)), re.I) for t in (excluded_terms or [])]
         store = getattr(base, "store", None)
-        if store is None or not hasattr(base, "legacy"):
+        if store is None:
             raise TypeError("ChallengeKnowledgeProvider requires a LibraryKnowledgeProvider-compatible base")
         registered = {item["id"] for item in store.libraries()}
         self.library_ids = tuple(sorted(registered if library_ids is None else registered.intersection(library_ids)))
@@ -254,24 +253,22 @@ class ChallengeKnowledgeProvider:
         if requested is not None and not isinstance(requested, list):
             raise ValueError("library_ids filter must be a list")
         libraries = list(self.library_ids) if requested is None else sorted(set(self.library_ids).intersection(requested))
-        if "mode" in filters and filters["mode"] != self.mode:
+        if "mode" in filters and normalize_mode(filters["mode"]) != self.mode:
             raise ValueError("Challenge retrieval mode is pinned")
-        if "backend" in filters and filters["backend"] not in {self.mode, "native" if self.mode == "native" else "qmd"}:
+        if "backend" in filters and filters["backend"] != "qmd" and normalize_mode(filters["backend"]) != self.mode:
             raise ValueError("Challenge retrieval backend is pinned")
         limit = max(0, min(int(limit), 40))
         with self._lock:
             self._query_counter += 1
             qid = self._query_counter
         self._record("query", query_id=qid, query=str(query), requested_mode=self.mode, library_ids=libraries, kind=kind,
-                     legacy_manuals=requested is None and kind in {"all", "manual"})
+                     legacy_manuals=False)
         if not str(query).strip() or limit == 0:
             return []
         metadata = {k: filters[k] for k in ("version", "branch", "package", "physics") if k in filters}
         branches = []
         if libraries:
             branches.append(("registered_libraries", self.mode, self._base.search, dict(metadata, mode=self.mode, library_ids=libraries), kind))
-        if requested is None and kind in {"all", "manual"}:
-            branches.append(("legacy_manuals", "native", self._base.legacy.search, dict(metadata, backend="native"), "manual"))
         ranked = {}
         for branch, mode, run, branch_filters, branch_kind in branches:
             try:
@@ -283,7 +280,7 @@ class ChallengeKnowledgeProvider:
             for rank, candidate in enumerate(candidates, 1):
                 cid = candidate.get("id")
                 actual = candidate.get("retrieval", {}).get("backend") or candidate.get("retrieval_backend")
-                canonical_mode = "native" if actual == "native-html-hierarchy-sqlite-fts5" else actual
+                canonical_mode = actual
                 if canonical_mode != mode:
                     self._record("backend_mismatch", query_id=qid, branch=branch, source_id=cid, expected=mode, actual=actual)
                     raise RuntimeError("Challenge source backend does not match the requested engine")
@@ -292,7 +289,7 @@ class ChallengeKnowledgeProvider:
                 clean, reason = self._clean_document(raw)
                 self._record("candidate_read", query_id=qid, source_id=cid, branch=branch, actual_backend=actual, allowed=bool(clean), reason=reason,
                              redacted=bool(clean and clean["challenge_filter"]["redacted"]))
-                if not clean or (branch == "registered_libraries" and clean.get("library_id") not in libraries) or (branch == "legacy_manuals" and str(cid).startswith("lo-")):
+                if not clean or (branch == "registered_libraries" and clean.get("library_id") not in libraries):
                     denied.append({"id": cid, "reason": reason or "branch_scope_mismatch"})
                     continue
                 clean["retrieval"] = dict(copy.deepcopy(candidate.get("retrieval", {})), backend=canonical_mode, challenge_branch=branch, policy_id=self._policy_id)
@@ -319,8 +316,8 @@ class ChallengeKnowledgeProvider:
         status = copy.deepcopy(self._base.status())
         status["libraries"] = [item for item in status.get("libraries", []) if item.get("id") in self.library_ids]
         status["challenge"] = {"policy_id": self._policy_id, "mode": self.mode, "library_ids": list(self.library_ids), "active_revision_count": len(self._active_ids),
-                               "generation_at_start": self._generation, "legacy_mode": "native", "legacy_kind": "manual", "legacy_counts_are_unfiltered": True,
-                               "excluded_family_count": len(self._families), "source_boundary": "pinned_active_libraries_and_filtered_legacy_manuals", "actual_backends_seen": sorted(self._seen_backends),
+                               "generation_at_start": self._generation, "legacy_searchable": False,
+                               "excluded_family_count": len(self._families), "source_boundary": "pinned_active_registered_libraries", "actual_backends_seen": sorted(self._seen_backends),
                                "audit_events": self._event_counter, "audit_dropped_events": self._audit_dropped,
-                               "limitations": ["Legacy retrieval counts precede challenge filtering.", "Results are filtered within each backend's bounded candidate window; fewer than requested results may remain.", "Filtered sources omit held-out references and are not complete page reproductions."]}
+                               "limitations": ["Results are filtered within each backend's bounded candidate window; fewer than requested results may remain.", "Filtered sources omit held-out references and are not complete page reproductions."]}
         return status

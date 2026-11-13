@@ -1,9 +1,7 @@
-"""Versioned COMSOL source retrieval, with no model or network dependency.
+"""COMSOL HTML parsing and permission-checked historical source archives.
 
-The native engine reads COMSOL's *existing* HTML topic boundaries and Eclipse
-TOC, rather than inventing chunks or summarising documentation. SQLite FTS5 is
-only a candidate generator; titles, explicit terminology aliases, and the real
-document hierarchy improve ranking. Optional engines are separate adapters.
+The registered library catalog and QMD are the only retrieval path. Existing
+HTML hierarchy and source IDs remain available for historical citation reads.
 """
 from __future__ import annotations
 
@@ -20,7 +18,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
-from .retrieval_backends import QMDAdapter, backend_status
+from .retrieval_backends import backend_status
 
 DEFAULT_DOC_ROOT = Path("D:/comsol/COMSOL63/Multiphysics/doc/help/wtpwebapps/ROOT/doc")
 SCHEMA_VERSION = "3"
@@ -263,7 +261,13 @@ class KnowledgeBase:
         return db
 
     def _schema(self, db):
+        # Explicit archive rebuilds retain document IDs and hierarchy, while
+        # retiring postings maintained by pre-QMD archive triggers.
         db.executescript("""
+            DROP TRIGGER IF EXISTS doc_ai;
+            DROP TRIGGER IF EXISTS doc_ad;
+            DROP TRIGGER IF EXISTS doc_au;
+            DROP TABLE IF EXISTS topics_fts;
             CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT);
             CREATE TABLE IF NOT EXISTS documents(
               id TEXT PRIMARY KEY, relpath TEXT UNIQUE NOT NULL, title TEXT NOT NULL,
@@ -272,16 +276,6 @@ class KnowledgeBase:
               parent_id TEXT, links TEXT, source_mtime_ns INTEGER, source_size INTEGER);
             CREATE INDEX IF NOT EXISTS doc_kind ON documents(kind);
             CREATE INDEX IF NOT EXISTS doc_package ON documents(package);
-            CREATE VIRTUAL TABLE IF NOT EXISTS topics_fts USING fts5(
-              title, context, headings, text, content='documents', content_rowid='rowid',
-              tokenize='porter unicode61');
-            CREATE TRIGGER IF NOT EXISTS doc_ai AFTER INSERT ON documents BEGIN
-              INSERT INTO topics_fts(rowid,title,context,headings,text) VALUES(new.rowid,new.title,new.context,new.headings,new.text); END;
-            CREATE TRIGGER IF NOT EXISTS doc_ad AFTER DELETE ON documents BEGIN
-              INSERT INTO topics_fts(topics_fts,rowid,title,context,headings,text) VALUES('delete',old.rowid,old.title,old.context,old.headings,old.text); END;
-            CREATE TRIGGER IF NOT EXISTS doc_au AFTER UPDATE ON documents BEGIN
-              INSERT INTO topics_fts(topics_fts,rowid,title,context,headings,text) VALUES('delete',old.rowid,old.title,old.context,old.headings,old.text);
-              INSERT INTO topics_fts(rowid,title,context,headings,text) VALUES(new.rowid,new.title,new.context,new.headings,new.text); END;
         """)
 
     def build(self) -> dict:
@@ -381,9 +375,9 @@ class KnowledgeBase:
         return {"ready": count > 0, "building": self._building or metadata.get("build_state") == "building", "index_complete": metadata.get("build_state") == "complete", "count": count, "document_count": count,
                 "by_kind": counts, "packages": packages, "version": metadata.get("version", self.version),
                 "doc_root": str(self.doc_root), "doc_root_available": self.doc_root.is_dir(),
-                "built_at": metadata.get("built_at"), "backend": "native-html-hierarchy-sqlite-fts5",
+                "built_at": metadata.get("built_at"), "backend": "registered-qmd", "archive_backend": "legacy-html-archive",
                 "backends": backend_status(self.data_dir), "error": self._last_error,
-                "limitations": ["Native retrieval uses real HTML TOC hierarchy, explicit Chinese/English aliases and lexical ranking; it does not perform LLM reasoning or vector search.", "Equation images and diagrams are not OCRed; inspect the official page for full mathematical notation.", "Application-library values are examples, not validated inputs for the user's model."]}
+                "limitations": ["HTML archives preserve original hierarchy and historical citation reads; current retrieval uses registered QMD indexes.", "Equation images and diagrams are not OCRed; inspect the official page for full mathematical notation.", "Application-library values are examples, not validated inputs for the user's model."]}
 
     def _result(self, row, terms=None, score=0.0, full=False):
         result = {"id": row["id"], "title": row["title"], "excerpt": _excerpt(row["text"], terms or []),
@@ -394,7 +388,7 @@ class KnowledgeBase:
                   "version": row["version"], "branch": row["branch"], "score": round(score, 5),
                   "package": row["package"], "physics": json.loads(row["physics"]),
                   "parent_id": row["parent_id"], "headings": row["headings"].splitlines(),
-                  "retrieval_backend": "native-html-hierarchy-sqlite-fts5"}
+                  "retrieval_backend": "legacy-html-archive"}
         if full:
             result["relative_path"] = row["relpath"]
             result["related_links"] = json.loads(row["links"])
@@ -402,132 +396,10 @@ class KnowledgeBase:
         return result
 
     def search(self, query: str, limit: int = 8, kind: str = "all", filters: dict | None = None) -> list[dict]:
-        if not query.strip() or not self.db_path.exists():
-            return []
-        if kind not in ("all", "manual", "case", "code"):
-            raise ValueError("kind must be all, manual, case or code")
-        limit = max(1, min(int(limit), 40))
-        expanded = expand_query(query)
-        terms = expanded["terms"]
-        if not terms:
-            return []
-        filters = filters or {}
-        exclusions = filters.get("exclude_relpath_prefixes", [])
-        if not isinstance(exclusions, list) or any(not isinstance(prefix, str) for prefix in exclusions):
-            raise ValueError("exclude_relpath_prefixes must be a list of relative directory paths")
-        normalized_exclusions = []
-        for prefix in exclusions:
-            prefix = prefix.replace("\\", "/")
-            if prefix == "":
-                return []
-            if (prefix.startswith("/") or ":" in prefix or "\0" in prefix
-                    or any(part in {"", ".", ".."} for part in prefix.rstrip("/").split("/"))):
-                raise ValueError("exclude_relpath_prefixes must stay within the documentation root")
-            normalized_exclusions.append(prefix.rstrip("/"))
-        requested_backend = filters.get("backend", os.environ.get("SIM_ADVISOR_RETRIEVAL_MODE", "native"))
-        if requested_backend == "pageindex":
-            raise ValueError("PageIndex PDF reasoning requires an explicitly indexed PDF and configured model; use PageIndexAdapter. Native HTML retrieval is not PageIndex.")
-        if requested_backend == "qmd":
-            if normalized_exclusions:
-                raise ValueError("Legacy source-prefix exclusions require native retrieval; no global QMD fallback")
-            if not backend_status(self.data_dir)["qmd"]["available"]:
-                raise ValueError("Actual QMD keyword index is unavailable; run scripts/ingest_docs.py --qmd first")
-            candidates = QMDAdapter(self.data_dir).search(" ".join(terms), 160)
-            results = []
-            with self._connect() as db:
-                for candidate in candidates:
-                    row = db.execute("SELECT * FROM documents WHERE id=?", (candidate["id"],)).fetchone()
-                    if not row or (kind != "all" and row["kind"] != kind):
-                        continue
-                    if any(filters.get(key) and filters[key] != row[key] for key in ("version", "package", "branch")):
-                        continue
-                    if filters.get("physics") and filters["physics"] not in json.loads(row["physics"]):
-                        continue
-                    title = row["title"].lower()
-                    score = float(candidate["score"])
-                    normalized_title = " ".join(re.findall(r"[a-z0-9]+", title))
-                    normalized_query = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
-                    if normalized_query and normalized_title == normalized_query:
-                        score += 3
-                    for phrase in expanded["phrases"]:
-                        if phrase.lower() in title:
-                            score += 0.3
-                    for phrase in expanded["focus_phrases"]:
-                        if phrase in title:
-                            score += 1.5
-                    score += 0.025 * sum(bool(re.search(r"\b" + re.escape(t) + r"\b", title)) for t in terms)
-                    result = self._result(row, terms, score)
-                    result["retrieval_backend"] = "qmd-keyword+source-hierarchy"
-                    results.append(result)
-            results.sort(key=lambda item: item["score"], reverse=True)
-            return results[:limit]
-        if requested_backend != "native":
-            raise ValueError("backend must be native, qmd or pageindex")
-        clauses, values = [], []
-        for prefix in normalized_exclusions:
-            escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            clauses.append("(d.relpath<>? AND d.relpath NOT LIKE ? ESCAPE '\\')")
-            values.extend([prefix, escaped + "/%"])
-        if kind != "all":
-            clauses.append("d.kind=?")
-            values.append(kind)
-        for key in ("version", "package", "branch"):
-            if filters.get(key):
-                clauses.append(f"d.{key}=?")
-                values.append(str(filters[key]))
-        if filters.get("physics"):
-            clauses.append("d.physics LIKE ?")
-            values.append('%"' + str(filters["physics"]) + '"%')
-        match = " OR ".join('"' + term + '"' for term in terms)
-        sql = "SELECT d.*,bm25(topics_fts,9.0,2.5,3.0,1.0) AS fts_rank FROM topics_fts JOIN documents d ON d.rowid=topics_fts.rowid WHERE topics_fts MATCH ?"
-        if clauses:
-            sql += " AND " + " AND ".join(clauses)
-        sql += " ORDER BY fts_rank LIMIT 180"
-        try:
-            with self._connect() as db:
-                rows = db.execute(sql, [match] + values).fetchall()
-                ranked = []
-                for row in rows:
-                    title = row["title"].lower()
-                    context = row["context"].lower()
-                    body = row["text"].lower()
-                    title_hits = sum(bool(re.search(r"\b" + re.escape(t) + r"\b", title)) for t in terms)
-                    context_hits = sum(bool(re.search(r"\b" + re.escape(t) + r"\b", context)) for t in terms)
-                    text_hits = sum(bool(re.search(r"\b" + re.escape(t) + r"\b", body)) for t in terms)
-                    score = -float(row["fts_rank"]) + title_hits * 2.2 + context_hits * 0.45 + (text_hits / len(terms)) * 3.5
-                    normalized_title = " ".join(re.findall(r"[a-z0-9]+", title))
-                    normalized_query = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
-                    if normalized_query and normalized_title == normalized_query:
-                        score += 38
-                    for phrase in expanded["phrases"]:
-                        if phrase.lower() in title:
-                            score += 7
-                        elif phrase.lower() in context:
-                            score += 2.5
-                    for phrase in expanded["focus_phrases"]:
-                        if phrase in title:
-                            score += 28
-                        elif phrase in context:
-                            score += 12
-                        elif phrase in body[:2500]:
-                            score += 4
-                    # Multiple terms together in a title/real TOC path disambiguate
-                    # repeated "Heat Flux", "Inlet", "Fixed Constraint" topics.
-                    if title_hits == len(terms):
-                        score += 5
-                    physics = json.loads(row["physics"])
-                    score += 2.0 * len(set(physics) & set(expanded["physics"]))
-                    preferred_packages = {"heat": "heat", "structure": "sme", "flow": "cfd", "electromagnetics": "acdc", "acoustics": "aco"}
-                    if any(row["package"] == "com.comsol.help." + preferred_packages.get(physics_name, "!") for physics_name in expanded["physics"]):
-                        score += 2.0
-                    if expanded["physics"] and physics and not set(physics) & set(expanded["physics"]):
-                        score *= 0.65
-                    ranked.append((score, row))
-                ranked.sort(key=lambda item: item[0], reverse=True)
-                return [self._result(row, terms, score) for score, row in ranked[:limit]]
-        except sqlite3.Error as exc:
-            self._last_error = str(exc)
-            return []
+        """Compatibility entry point; all searches use registered QMD indexes."""
+        from .library_provider import LibraryKnowledgeProvider
+        return LibraryKnowledgeProvider(self, self.data_dir / "libraries").search(
+            query, limit=limit, kind=kind, filters=filters)
 
     def get_document(self, source_id: str) -> dict | None:
         if not re.fullmatch(r"cs-[a-f0-9]{24}", source_id) or not self.db_path.exists():

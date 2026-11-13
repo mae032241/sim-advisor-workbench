@@ -134,7 +134,15 @@ def test_manifest_conversion_only_copies_owned_locator_projection(tmp_path, monk
     raw = dict(built, mapping=NoCopy(built["mapping"]), representation=NoCopy(built["representation"]))
     stored = module._serialize_manifest(raw, search.data_dir)
     assert stored["mapping"] is raw["mapping"] and stored["representation"] is raw["representation"]
-    monkeypatch.setattr(module, "read_manifest", lambda *args, **kwargs: dict(stored))
+    def read(*args, resolve_paths=False, **kwargs):
+        value = dict(stored)
+        if resolve_paths:
+            from advisor.index_paths import resolve_index_manifest
+            value.update(resolve_index_manifest({key: value[key] for key in module._MANIFEST_LOCATORS if key in value}, search.data_dir))
+            value.pop("path_schema", None)
+        return value
+
+    monkeypatch.setattr(module, "read_manifest", read)
     loaded = search._load_active()
     assert loaded["directory"] == built["directory"]
     assert loaded["mapping"] is raw["mapping"] and loaded["representation"] is raw["representation"]

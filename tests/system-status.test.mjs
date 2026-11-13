@@ -43,8 +43,8 @@ test('modern registered indexes override legacy unverified readiness, including 
     const qmd = card(f.cards(status), 'qmd');
     assert.equal(qmd.label, '关键词可用');
     assert.equal(qmd.tone, 'good');
-    assert.deepEqual(qmd.modes.map(mode => [mode.id, mode.label]), [['native', '索引就绪'], ['qmd_keyword', '索引就绪'], ['qmd_vector', '已中断']]);
-    assert.equal(qmd.modes[2].error, '构建已中断');
+    assert.deepEqual(qmd.modes.map(mode => [mode.id, mode.label]), [['qmd_keyword', '索引就绪'], ['qmd_vector', '已中断']]);
+    assert.equal(qmd.modes[1].error, '构建已中断');
     assert.doesNotMatch(qmd.detail, /run old ingest/);
   }
 });
@@ -55,11 +55,11 @@ test('QMD installed does not imply indexes exist; absent mode data remains unkno
   assert.equal(qmd.label, '已安装 · 索引未就绪');
   assert.ok(qmd.modes.every(mode => mode.label === '状态未报告'));
   const requested = card(f.cards({services: {qmd: {installed: true, library_indexes: {modes: {native: {ready: true}, qmd_vector: {ready: false, state: 'not_requested'}}}}}}), 'qmd');
-  assert.equal(requested.modes[2].label, '未构建（按需）');
+  assert.equal(requested.modes[1].label, '未构建（按需）');
   assert.equal(requested.label, '已安装 · 索引未就绪');
 });
 
-test('missing QMD component does not hide an independently ready native index', () => {
+test('missing QMD component is reported without exposing legacy native mode', () => {
   const f = fixture();
   const qmd = card(f.cards({services: {qmd: {component_available: false, library_indexes: registered}}}), 'qmd');
   assert.equal(qmd.label, '组件未配置');
@@ -74,7 +74,7 @@ test('closed libraries retain physical index readiness without claiming an enabl
   const qmd = card(f.cards(source), 'qmd');
   assert.equal(qmd.label, '索引保留 · 无启用资料库');
   assert.equal(qmd.tone, 'neutral');
-  assert.equal(qmd.modes[1].label, '索引就绪');
+  assert.equal(qmd.modes[0].label, '索引就绪');
   assert.match(qmd.detail, /启用 0 · 关闭 2 · 已删除 1/);
   assert.equal(registered.modes.qmd_keyword.ready, true);
 });
@@ -160,8 +160,8 @@ test('known interrupted build errors get a short Chinese explanation and retain 
   const error = 'Build owner exited before this mode completed; completed modes remain usable';
   const indexes = {...registered, modes: {...registered.modes, qmd_vector: {ready: false, state: 'interrupted', error}}};
   const qmd = card(f.cards({services: {qmd: {installed: true, library_indexes: indexes}}}), 'qmd');
-  assert.match(qmd.modes[2].error, /构建进程已退出/);
-  assert.equal(qmd.modes[2].technical, error);
+  assert.match(qmd.modes[1].error, /构建进程已退出/);
+  assert.equal(qmd.modes[1].technical, error);
   f.run('state.status = input; renderSystem()', {services: {qmd: {installed: true, library_indexes: indexes}}});
   assert.match(f.get('service-list').textContent, /技术错误详情/);
   assert.match(f.get('service-list').textContent, /Build owner exited/);
@@ -178,7 +178,7 @@ test('rendered per-mode errors and external names are text, never markup', () =>
   assert.match(list.textContent, /sim-cli/);
   assert.match(list.textContent, /<script>fail\(\)<\/script>/);
   assert.match(list.textContent, /<img src=x onerror=fail\(\)>/);
-  assert.equal(list.children.find(value => value.dataset.service === 'qmd').children.at(-1).children.length, 3);
+  assert.equal(list.children.find(value => value.dataset.service === 'qmd').children.at(-1).children.length, 2);
 });
 
 test('opening the system dialog paints current state immediately and requests fresh server status', () => {
@@ -201,8 +201,8 @@ test('AgentPanel state callbacks update an open modal without waiting for the 15
   assert.match(f.get('service-list').textContent, /未选择方案/);
 });
 
-test('legacy corpus controls are retained under a clearly labeled closed disclosure', () => {
-  assert.match(html, /<details class="corpus-block system-legacy"><summary>旧版整手册索引（可选）<\/summary>/);
+test('keyword maintenance uses the registered QMD engine under a closed disclosure', () => {
+  assert.match(html, /<details class="corpus-block system-legacy"><summary>资料库关键词索引维护<\/summary>/);
   for (const id of ['corpus-status', 'build-index', 'index-progress', 'service-list']) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(source, /onState: updateAgentState/);
 });

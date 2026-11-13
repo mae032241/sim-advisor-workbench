@@ -53,7 +53,7 @@ class BranchToolTests(unittest.TestCase):
     def test_old_search_call_keeps_default_unrestricted_branch(self):
         self.kb.search = Mock(return_value=[])
         self.tools.call_public("search_knowledge", {"query": "mesh", "kind": "all", "mode": "native"})
-        self.kb.search.assert_called_once_with("mesh", limit=6, kind="all", filters={"mode": "native"})
+        self.kb.search.assert_called_once_with("mesh", limit=6, kind="all", filters={"mode": "qmd_keyword"})
 
     def test_invalid_branch_is_rejected_without_broadening_search(self):
         self.kb.search = Mock(return_value=[])
@@ -108,7 +108,7 @@ class LibraryCLIEntryTests(unittest.TestCase):
 
         class Store:
             def __init__(self, path): self.root = path
-            def index_status_summary(self): return {"modes": {"native": {"ready": True}}}
+            def index_status_summary(self): return {"modes": {"qmd_keyword": {"ready": True}}}
 
         class Search:
             def __init__(self, path): calls.append(("root", path))
@@ -122,7 +122,7 @@ class LibraryCLIEntryTests(unittest.TestCase):
                 argv = ["library_cli.py", "--data-dir", directory, "search", "fluid interface", *extra]
                 with patch.object(library_cli, "LibraryStore", Store), patch("advisor.library_search.LibrarySearch", Search), patch.object(sys, "argv", argv), redirect_stdout(output):
                     self.assertEqual(library_cli.main(), 0)
-                self.assertEqual(calls[-1][1], {"mode": "native", "library_ids": None, "limit": 8, **expected})
+                self.assertEqual(calls[-1][1], {"mode": "qmd_keyword", "library_ids": None, "limit": 8, **expected})
                 self.assertEqual(json.loads(output.getvalue())[0]["id"], "lo-feature")
 
     def test_cli_read_adds_related_summary_and_retains_full_source_body(self):
@@ -182,3 +182,9 @@ class HTTPSearchEntryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_public_search_mode_choices_only_expose_qmd():
+    from advisor.planning_service import tool_definitions
+    search = next(tool for tool in tool_definitions() if tool["name"] == "search_knowledge")
+    assert search["inputSchema"]["properties"]["mode"]["enum"] == ["qmd_keyword", "qmd_vector"]

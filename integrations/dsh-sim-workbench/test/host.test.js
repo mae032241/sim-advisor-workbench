@@ -4,7 +4,7 @@ import test from 'node:test';
 import { WorkbenchHost, apply, startPlugin, inject, libraryArgv, normalizeConfig } from '../index.js';
 
 const SID_A = 'a'.repeat(32), SID_B = 'b'.repeat(32);
-const NAMES = ['get_task_context', 'search_knowledge', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled'];
+const NAMES = ['get_task_context', 'search_knowledge', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled', 'get_tool_contract'];
 
 function nativeHost() {
   const agents = [], listeners = [];
@@ -54,8 +54,8 @@ async function fixture(t, options = {}) {
   async function request(origin, path, body) {
     calls.push({ origin, path, body });
     if (path === '/api/sessions') return { id: sequence++ === 0 ? SID_A : SID_B };
-    if (path === '/api/tools') return { tools: NAMES.map(name => ({ name, description: name,
-      inputSchema: { type: 'object', properties: { session_id: { type: 'string' } }, required: ['session_id'], additionalProperties: false } })) };
+    if (path === '/api/tools?bound=true') return { bound: true, tools: NAMES.map(name => ({ name, description: name,
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false } })) };
     const match = /^\/api\/sessions\/([ab]{32})\/external\/(register|poll|event|tool|unregister)$/.exec(path);
     assert.ok(match, 'Only workbench routes are requested');
     const [, sid, action] = match;
@@ -122,6 +122,12 @@ test('explicit create binds existing DSH Agent and supplies planning and library
     const definition = f.first.ctx.toolsMap.get(name);
     assert.ok(definition); assert.equal(definition.parameters.properties.session_id, undefined);
   }
+  const arguments_ = {tool: 'save_plan', path: '/design_brief/simplification/candidates/0/status', offset: 0, length: 40};
+  await f.call(f.first, 'get_tool_contract', arguments_);
+  const lookup = f.calls.findLast(call => call.body?.name === 'get_tool_contract');
+  assert.equal(lookup.path, `/api/sessions/${SID_A}/external/tool`);
+  assert.deepEqual(lookup.body.arguments, arguments_);
+  assert.equal(lookup.body.arguments.session_id, undefined);
   assert.equal(f.records.get(SID_A).metadata.model, 'existing-model');
   const count = f.calls.filter(c => c.path === '/api/sessions').length;
   await assert.rejects(f.call(f.first, 'create_workbench_plan', { goal: '另一个新的方案不能隐式替换' }), /已有绑定/);
@@ -225,12 +231,12 @@ test('library tool only invokes the fixed CLI with mapped typed arguments and pr
 test('library argv covers constructors, indexing, filters, rebind, configuration and evidence', () => {
   assert.deepEqual(libraryArgv('list'), ['list']);
   assert.deepEqual(libraryArgv('scan', { library_id: 'lib-a', paths: ['a.mph'] }), ['scan', 'lib-a', '--path', 'a.mph']);
-  assert.deepEqual(libraryArgv('build', { library_id: 'lib-a', enrich: false, modes: ['native', 'qmd_keyword', 'qmd_vector'] }), ['build', 'lib-a', '--modes', 'native,qmd_keyword,qmd_vector']);
+  assert.deepEqual(libraryArgv('build', { library_id: 'lib-a', enrich: false, modes: ['native', 'qmd_keyword', 'qmd_vector'] }), ['build', 'lib-a', '--modes', 'qmd_keyword,qmd_vector']);
   assert.ok(!libraryArgv('build', { library_id: 'lib-a' }).includes('--enrich'));
   assert.ok(libraryArgv('build', { library_id: 'lib-a', shallow: true, enrich: true }).includes('--enrich'));
-  assert.deepEqual(libraryArgv('index'), ['index', '--modes', 'native']);
+  assert.deepEqual(libraryArgv('index'), ['index', '--modes', 'qmd_keyword']);
   assert.deepEqual(libraryArgv('search', { query: '压降', library_ids: ['lib-a'], mode: 'qmd_vector' }), ['search', '压降', '--mode', 'qmd_vector', '--library', 'lib-a', '--limit', '8']);
-  assert.deepEqual(libraryArgv('search', { query: '边界层', kind: 'code', feature_branch: 'mesh' }), ['search', '边界层', '--mode', 'native', '--limit', '8', '--kind', 'code', '--feature-branch', 'mesh']);
+  assert.deepEqual(libraryArgv('search', { query: '边界层', kind: 'code', feature_branch: 'mesh' }), ['search', '边界层', '--mode', 'qmd_keyword', '--limit', '8', '--kind', 'code', '--feature-branch', 'mesh']);
   assert.deepEqual(libraryArgv('status', { library_id: 'lib-a' }), ['status', 'lib-a']);
   assert.deepEqual(libraryArgv('cancel', { job_id: 'a'.repeat(32) }), ['cancel', 'a'.repeat(32)]);
   for (const job_id of ['../foreign', '--data-dir', 'short', 123]) assert.throws(() => libraryArgv('cancel', { job_id }));
@@ -250,7 +256,7 @@ test('library lifecycle and model discovery use typed actions and no implicit fi
   }
   assert.deepEqual(libraryArgv('models', {library_id: 'lib-a', limit: 12}), ['models', 'lib-a', '--limit', '12']);
   assert.deepEqual(libraryArgv('list', {include_deleted: true}), ['list', '--include-deleted']);
-  assert.deepEqual(libraryArgv('build', {library_id: 'lib-a', limit: 13}), ['build', 'lib-a', '--limit', '13', '--modes', 'native']);
+  assert.deepEqual(libraryArgv('build', {library_id: 'lib-a', limit: 13}), ['build', 'lib-a', '--limit', '13', '--modes', 'qmd_keyword']);
   assert.throws(() => libraryArgv('list', {include_deleted: 'true'}), /布尔/);
   assert.ok(!libraryArgv('build', {library_id: 'lib-a'}).includes('--limit'));
   assert.equal(f.calls.length, 0, 'Lifecycle CLI actions do not create or bind a plan');

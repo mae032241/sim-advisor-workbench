@@ -276,6 +276,7 @@ class LibraryStore:
               CREATE INDEX IF NOT EXISTS builds_status ON builds(json_extract(body,'$.status'));
               CREATE TABLE IF NOT EXISTS case_members(group_id TEXT NOT NULL, local_id TEXT NOT NULL,
                 citation_id TEXT NOT NULL, PRIMARY KEY(group_id,local_id));
+              CREATE INDEX IF NOT EXISTS case_members_citation ON case_members(citation_id,group_id);
             """)
             initialize_revisions(db)
             from .tutorial_catalog import ensure_schema
@@ -367,8 +368,54 @@ class LibraryStore:
     def searchable_library_ids(self, requested=None):
         if requested is not None and (not isinstance(requested, list) or not all(isinstance(value, str) for value in requested)):
             raise ValueError("Requested library IDs must be a list of strings")
-        eligible = {library["id"] for library in self.libraries(include_deleted=True)
-                    if library["enabled"] and library["deleted_at"] is None}
+        from pathlib import PureWindowsPath
+        anchors = (self.paths.root, *sorted(self.paths.previous_roots, key=lambda path: len(path.parts), reverse=True))
+
+        def validate_locator(value):
+            if not isinstance(value, str) or "\x00" in value:
+                raise ValueError("Invalid source directory locator")
+            path = Path(value).expanduser()
+            if path.is_absolute():
+                for anchor in anchors:
+                    if path.is_relative_to(anchor):
+                        path = path.relative_to(anchor)
+                        break
+                else:
+                    return  # External and offline absolute sources are valid.
+            elif PureWindowsPath(value).drive:
+                raise ValueError("Drive-relative workspace locators are not supported")
+            # Preserve locator boundary checks without filesystem resolution,
+            # which is unnecessary for a lifecycle permission decision.
+            if not Path(os.path.normpath(self.paths.root / path)).is_relative_to(self.paths.root):
+                raise ValueError("Workspace locator escapes the data directory")
+
+        with closing(self.connect()) as db:
+            rows = db.execute("SELECT id,body FROM libraries").fetchall()
+        eligible = set()
+        # Validate every record, even for an empty/explicit request: a malformed
+        # catalog must not become an enable-all or partially accepted scope.
+        for library_id, raw in rows:
+            library = json.loads(raw)
+            if not isinstance(library, dict) or not isinstance(library_id, str) or not library_id or library.get("id") != library_id:
+                raise ValueError("Invalid library body/id")
+            enabled, deleted = library.get("enabled", True), library.get("deleted_at")
+            if type(enabled) is not bool or deleted is not None and (not isinstance(deleted, str) or not deleted.strip()):
+                raise ValueError("Invalid library lifecycle metadata")
+            roots = library.get("roots")
+            if not isinstance(roots, list):
+                raise ValueError("Invalid library source roots")
+            for root in roots:
+                if not isinstance(root, dict) or "path" not in root:
+                    raise ValueError("Invalid library source root")
+                validate_locator(root["path"])
+                if "previous_paths" in root:
+                    previous = root["previous_paths"]
+                    if not isinstance(previous, list) or any(not isinstance(path, str) or not path.strip() for path in previous):
+                        raise ValueError("Invalid previous source directory locators")
+                    for path in previous:
+                        validate_locator(path)
+            if enabled and deleted is None:
+                eligible.add(library_id)
         return sorted(eligible) if requested is None else list(dict.fromkeys(value for value in requested if value in eligible))
 
     @staticmethod
@@ -386,8 +433,9 @@ class LibraryStore:
         if type is not None and (not isinstance(type, str) or type not in TYPES):
             raise ValueError("Unsupported library type")
         needle = (query or "").strip().casefold()
+        catalog = self.libraries()
         libraries = []
-        for library in self.libraries():
+        for library in catalog:
             item = self._scope_library(library)
             if type is not None and item["type"] != type:
                 continue
@@ -405,7 +453,14 @@ class LibraryStore:
                      "groups": [{"id": "user-manuals", "name": "手册", "libraries": by_type["user-manuals"]},
                                 {"id": "user-models", "name": "模型案例", "libraries": by_type["user-models"]}]}],
                 "enabled_library_ids": [item["id"] for item in libraries if item["enabled"]],
-                "library_count": len(libraries), "enabled_library_count": sum(item["enabled"] for item in libraries)}
+                "library_count": len(libraries), "enabled_library_count": sum(item["enabled"] for item in libraries),
+                "global_library_count": len(catalog), "matched_library_count": len(libraries),
+                "filter_applied": bool(needle or type is not None),
+                "query": query, "type": type, "query_match_mode": "literal_substring",
+                "next_action": ("当前筛选没有匹配资料库，不表示目录为空；调用 get_library_scope({}) 查看完整目录，再按研究需要选择库。不要自动启用全部库。"
+                                if not libraries and (needle or type is not None) and catalog else
+                                "目录为空，当前没有已登记且未删除的资料库。" if not catalog else
+                                "按当前研究需要选择资料库；启停状态仅由显式 set_libraries_enabled 调用改变。")}
 
     def set_enabled_many(self, library_ids, enabled):
         """Atomically change one explicit scope; retained indexes stay untouched."""
@@ -1408,10 +1463,9 @@ class LibraryStore:
                               () if library_ids is None else tuple(library_ids)).fetchone() is not None
 
     def current_generation(self):
-        # Generation depends only on active citation identities. Status queries
-        # must not load/decode every document and model payload to obtain them.
-        with closing(self.connect()) as db, closing(db.execute("SELECT citation_id FROM active ORDER BY citation_id")) as rows:
-            return _ordered_identity_hash(rows)[0][:24]
+        from .catalog_generation import cached_generation
+        with closing(self.connect()) as db:
+            return cached_generation(db, _ordered_identity_hash)
 
     def index_status(self, *, summary=False):
         from .library_search import LibrarySearch
@@ -1668,9 +1722,17 @@ class LibraryStore:
         return finish(output)
 
     def configuration(self, citation_id, *, category=None, node_path=None, limit=20, source="api"):
-        obj = self.read(citation_id)
+        source = "xml" if source == "saved" else source
+        if source not in {"xml", "api"}:
+            raise ValueError("source must be saved/xml or api")
+        # This read needs the exact saved authority, not a hydrated overview or
+        # its tutorial navigation. Gate the archive before loading settings.
+        self.require_not_heldout(citation_id)
+        obj = self.get(citation_id)
         if obj is None:
             raise FileNotFoundError("Object not found")
+        self.require_readable_library(obj["library_id"])
+        self.require_not_heldout(citation_id, obj)
         if obj["type"] != "model_case":
             raise ValueError("Configuration reads require an exact model_case citation ID")
         compact = self._compact_context(obj)
@@ -1916,6 +1978,9 @@ class LibraryStore:
         # UI/CLI entry points select compact explicitly for model libraries.
         if not isinstance(model_format, str) or model_format not in {"legacy", "compact"}:
             raise ValueError("model_format must be legacy or compact")
+        if modes:
+            from .query_terms import normalize_modes
+            modes = normalize_modes(modes)
         if modes and "qmd_vector" in modes:
             from .retrieval_settings import require_enabled
             require_enabled(self.root)
@@ -2147,6 +2212,7 @@ class LibraryStore:
                 # bulk imports; do not hydrate other libraries' payloads here.
                 with self.object_stream() as objects:
                     job["indexes"] = LibrarySearch(self.root / "search").build(objects, modes=list(modes), generation=generation, on_progress=index_progress)
+                self._refresh_case_navigation(job["indexes"])
             check_cancelled()
             job["failed_annotations"] = sum(i.get("enrichment", {}).get("status") == "failed" for i in job["items"])
             mode_states = job.get("indexes", {}).get("modes", {})
@@ -2174,6 +2240,37 @@ class LibraryStore:
             self._build_lock.release()
         return self._job_view(job)
 
+    def _refresh_case_navigation(self, indexes):
+        """Refresh derived overview scopes after publication under our build lease."""
+        if not indexes.get("modes", {}).get("qmd_keyword", {}).get("ready"):
+            return
+        try:
+            from .case_navigation import (NavigationNotPrepared, NavigationStale,
+                                          build_navigation, validated_navigation)
+            if indexes.get("unchanged"):
+                from .index_manifest_cache import read_manifest
+                active = read_manifest(self.root / "search" / "active.json", summary=True, resolve_paths=True)
+                if active:
+                    try:
+                        current = validated_navigation(self.root / "search", active)
+                    except (NavigationNotPrepared, NavigationStale):
+                        pass
+                    else:
+                        indexes["case_navigation"] = {"state": "ready", "unchanged": True,
+                            "overview_count": current["meta"]["overview_count"]}
+                        return
+            # A newly published corpus needs implementation scopes, not only
+            # discoverable overviews. Derive these from the saved archives;
+            # neither the original models nor QMD are rebuilt here.
+            from .case_guides import build_case_guides
+            indexes["case_navigation"] = dict(build_navigation(self, case_ids=None), state="ready")
+            indexes["case_guides"] = build_case_guides(self, None)
+        except BuildCancelled:
+            raise
+        except Exception as exc:
+            # A disposable navigation failure cannot downgrade published QMD.
+            indexes["case_navigation"] = {"state": "need_rebuild", "error": str(exc)[:700]}
+
     def start_build(self, library_id, **kwargs):
         if "qmd_vector" in (kwargs.get("modes") or []):
             from .retrieval_settings import require_enabled
@@ -2200,6 +2297,8 @@ class LibraryStore:
         return self.job(job_id)
 
     def reindex(self, modes):
+        from .query_terms import normalize_modes
+        modes = normalize_modes(modes)
         if "qmd_vector" in modes:
             from .retrieval_settings import require_enabled
             require_enabled(self.root)
@@ -2242,6 +2341,7 @@ class LibraryStore:
                     job["generation"] = generation
                     job["indexes"] = LibrarySearch(self.root / "search").build(objects, modes=list(modes),
                                                                             generation=generation, on_progress=progress)
+                self._refresh_case_navigation(job["indexes"])
                 check_cancelled()
                 job["failed_indexes"] = [mode for mode in modes if not job["indexes"].get("modes", {}).get(mode, {}).get("ready")]
                 job["status"] = "partial" if job["failed_indexes"] else "completed"

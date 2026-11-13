@@ -47,12 +47,12 @@ def main():
     print(json.dumps({"session_id": sid, "phase": "starting"}), flush=True)
     started = time.monotonic()
     try:
-        app.agents.message(sid, "这是会话接口联调，只做本消息要求，不进行完整规划。先调用get_plan确认当前模型格式，然后调用search_knowledge用native检索Mesh Element Quality，再调用read_source读取cs-a67ff0e99e600d559754cdbb正文（offset=0,length=10000）。记住校验词：青竹47。不要更新方案。最后简短回复模型格式、已读来源标题与校验词。")
+        app.agents.message(sid, "这是会话接口联调，只做本消息要求，不进行完整规划。先调用get_plan确认当前模型格式，然后调用search_knowledge以qmd_keyword检索Mesh Element Quality，从命中中选择适用手册并以其实际来源ID调用read_source读取正文（offset=0,length=10000）。记住校验词：青竹47。不要更新方案。最后简短回复模型格式、已读来源标题与校验词。")
         first = wait_idle(app.agents, sid)
         write_json(output / "turn-1.json", first)
         print(json.dumps({"phase": "turn1_completed", "thread_id": first["thread_id"], "seconds": round(time.monotonic() - started, 2)}), flush=True)
         mesh = next(s for s in sample["plan"]["steps"] if "网格" in s["title"])
-        app.agents.message(sid, "继续接口联调：先复述上轮校验词，再调用get_plan。仅用update_steps修改已有节点 " + mesh["id"] + "，保留其id与依赖，其他节点不变。把刚才Mesh Element Quality手册中可支持的质量指标、坏单元定位、修复/重建后的复检落实到action/checks/difficulty，并用已读来源cs-a67ff0e99e600d559754cdbb引用支持；未执行的质量检查要写成计划，不编造阈值或结果。不要调用save_plan、不要重新研究其他环节。最后简短说明更新与还未做的验证。")
+        app.agents.message(sid, "继续接口联调：先复述上轮校验词，再调用get_plan。仅用update_steps修改已有节点 " + mesh["id"] + "，保留其id与依赖，其他节点不变。把刚才Mesh Element Quality手册中可支持的质量指标、坏单元定位、修复/重建后的复检落实到action/checks/difficulty，并用上轮实际已读的来源ID引用支持；未执行的质量检查要写成计划，不编造阈值或结果。不要调用save_plan、不要重新研究其他环节。最后简短说明更新与还未做的验证。")
         second = wait_idle(app.agents, sid)
         updated = app.sessions.get(sid)
         other_before = [s for s in sample["plan"]["steps"] if s["id"] != mesh["id"]]

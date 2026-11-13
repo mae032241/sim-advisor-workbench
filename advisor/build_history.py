@@ -22,7 +22,7 @@ def compact_index_diagnostic(value):
     if "last_build" in value:
         result["last_build"] = compact_index_diagnostic(value["last_build"])
     if "mapping" in value or isinstance(representation, dict) and ("objects" in representation or any(k not in _STATS for k in representation)):
-        result["details_storage"] = "generation-native-object-lookup"
+        result["details_storage"] = "generation-object-lookup"
     return result
 
 

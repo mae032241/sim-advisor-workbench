@@ -25,6 +25,10 @@ integrations/**/offline-test-*/
 # Prepared run inputs are byte-for-byte copies of tracked public cases.
 /benchmarks/*/runs/*/*/inputs/
 /benchmarks/*/runs/*/*/problem.md
+# Local query profiles include machine paths, scope IDs and generated caches.
+/benchmarks/query-optimization-*/
+/benchmarks/*/private/evaluations/*/retrieval-replay*/
+/benchmarks/*/private/evaluations/keyword-backend-compare-*/
 *.log
 *.tmp
 *.bak

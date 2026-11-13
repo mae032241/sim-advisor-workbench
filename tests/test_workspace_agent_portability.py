@@ -37,16 +37,25 @@ def test_copied_workspace_preserves_history_without_resuming_old_harness(tmp_pat
         moved.agents.close()
 
 
-def test_relative_legacy_qmd_configuration_does_not_invoke_update(tmp_path):
+def test_legacy_qmd_facade_uses_registered_engine_without_rewriting_old_corpus(tmp_path, monkeypatch):
     from advisor.retrieval_backends import QMDAdapter
     root = tmp_path / 'data'
     config = root / 'qmd/config/qmd/index.yml'
     config.parent.mkdir(parents=True)
-    config.write_text('collections:\n  comsol63:\n    path: "C:/old/data/qmd/corpus"\n    pattern: "**/*.md"\n', encoding='utf-8')
-    adapter = QMDAdapter(root)
-    adapter._portable_configuration()
-    assert 'path: "corpus"' in config.read_text(encoding='utf-8')
-    assert 'C:/old' not in config.read_text(encoding='utf-8')
+    original = 'collections: historical archive only'
+    config.write_text(original, encoding='utf-8')
+    calls = []
+
+    class Store:
+        def __init__(self, path): calls.append(path)
+        def reindex(self, modes):
+            calls.append(modes)
+            return {'modes': {'qmd_keyword': {'ready': True}}}
+
+    monkeypatch.setattr('advisor.library_store.LibraryStore', Store)
+    assert QMDAdapter(root).prepare()['modes']['qmd_keyword']['ready']
+    assert calls == [root / 'libraries', ['qmd_keyword']]
+    assert config.read_text(encoding='utf-8') == original
 
 
 def test_legacy_proof_anchors_uploads_after_setup_receipt_has_already_moved(tmp_path):

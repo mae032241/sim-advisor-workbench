@@ -1,6 +1,12 @@
 import http from 'node:http';
 
-export class BridgeError extends Error {}
+export class BridgeError extends Error {
+  constructor(message, payload, status) {
+    super(message);
+    this.payload = payload;
+    this.status = status;
+  }
+}
 
 export function parseWorkbenchUrl(value) {
   let url;
@@ -36,7 +42,7 @@ export function requestJSON(origin, path, body, { signal, timeout = 10000 } = {}
         try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { reject(new BridgeError('工作台未返回有效 JSON。')); return; }
         if (!data || typeof data !== 'object' || Array.isArray(data)) { reject(new BridgeError('工作台返回格式无效。')); return; }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new BridgeError(`工作台请求失败（${response.statusCode}）：${String(data.error ?? '请检查工作台状态。').slice(0, 500)}`));
+          reject(new BridgeError(`工作台请求失败（${response.statusCode}）：${String(data.error ?? '请检查工作台状态。').slice(0, 500)}`, data, response.statusCode));
         } else resolve(data);
       });
       response.on('error', () => reject(new BridgeError('工作台响应中断，请重新读取状态后再提交。')));

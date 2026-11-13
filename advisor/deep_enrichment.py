@@ -17,11 +17,12 @@ import zlib
 
 from .build_control import BuildCancelled, BuildControl, build_control, check_cancelled
 from .library_store import encoded, now, process_alive
+from .query_terms import normalize_modes
 
 SCHEMA = "deep-api-batch/v1"
 OVERLAY_SCHEMA = "deep-api-overlay/v1"
 _DONE = {"completed", "partial", "failed", "skipped"}
-_MODES = {"native", "qmd_keyword"}
+_MODES = {"qmd_keyword"}
 
 
 def _batch_path(store, path):
@@ -287,11 +288,14 @@ def cleanup_retired_indexes(store, *, on_progress=None, timeout=240):
             time.sleep(1)
 
 
-def run_batch(store, checkpoint, *, modes=("native", "qmd_keyword"), publish=True, retry_failed=False,
+def run_batch(store, checkpoint, *, modes=("qmd_keyword",), publish=True, retry_failed=False,
               builder=None, api_runner=None, clean_indexes=True, on_progress=None):
     """Stage serial API reads, then publish cases and build indexes once."""
-    if not isinstance(modes, (list, tuple)) or any(mode not in _MODES for mode in modes):
-        raise ValueError("Deep API batches only support native/qmd_keyword index modes; embeddings are excluded")
+    if not isinstance(modes, (list, tuple)):
+        raise ValueError("Deep API batches only support qmd_keyword index mode; embeddings are excluded")
+    modes = normalize_modes(modes) if modes else []
+    if any(mode not in _MODES for mode in modes):
+        raise ValueError("Deep API batches only support qmd_keyword index mode; embeddings are excluded")
     if any(type(value) is not bool for value in (retry_failed, publish, clean_indexes)):
         raise ValueError("retry_failed, publish and clean_indexes must be booleans")
     db, meta = _checkpoint(store, checkpoint)

@@ -22,12 +22,12 @@ if str(APP_ROOT) not in sys.path:
 from advisor.catalog_storage import register_catalog_functions
 from advisor.index_manifest_cache import read_manifest
 from advisor.index_paths import resolve_index_manifest
-from advisor.native_index import unpack
+from advisor.object_index import iter_representation_stats
 from advisor.retrieval_settings import read as read_embedding_settings
 from advisor.tutorial_migration import TutorialMigrationPlan
-from normalize_tutorials import ReadOnlyLibraryStore
+from scripts.normalize_tutorials import ReadOnlyLibraryStore
 
-SCHEMA = "tutorial-normalization-audit/v1"
+SCHEMA = "tutorial-normalization-audit/v2"
 
 
 def encoded(value):
@@ -142,19 +142,25 @@ def _model_libraries(plan_db):
 
 
 def _native_retained(native, library):
+    """Compare locator/statistics semantics across v1 and slim v2 storage."""
+    samples = []
     def rows():
-        for rowid, identity, kind, branch, locator, representation, search_input in native.execute("""
-          SELECT o.rowid,o.id,o.kind,o.feature_branch,o.qmd_path,o.representation_json,o.search_input
+        metadata = iter(native.execute("""SELECT o.rowid,o.id,o.kind,o.feature_branch,o.qmd_path,r.id
           FROM objects o LEFT JOIN audit_plan.retirements r ON r.id=o.id
-          WHERE o.library_id=? AND r.id IS NULL ORDER BY o.id""", (library,)):
-            yield rowid, identity, kind, branch, locator, sha(representation), sha(search_input)
+          WHERE o.library_id=? ORDER BY o.id""", (library,)))
+        for identity, stats in iter_representation_stats(native, library_id=library):
+            row = next(metadata, None)
+            if row is None or row[1] != identity:
+                raise ValueError("Object metadata/statistics identities differ")
+            if row[-1] is not None:
+                continue
+            if len(samples) < 2:
+                samples.append({"rowid": row[0], "id": identity, "qmd_path": row[4], "representation": stats})
+            yield (*row[:-1], sha(encoded(stats)))
+        if next(metadata, None) is not None:
+            raise ValueError("Object representation statistics are incomplete")
     result = rows_hash(rows())
-    result["samples"] = []
-    for rowid, identity, locator, raw in native.execute("""SELECT o.rowid,o.id,o.qmd_path,o.search_input FROM objects o
-      LEFT JOIN audit_plan.retirements r ON r.id=o.id WHERE o.library_id=? AND r.id IS NULL ORDER BY o.id LIMIT 2""", (library,)):
-        title, text, _ = unpack(raw)
-        result["samples"].append({"rowid": rowid, "id": identity, "qmd_path": locator,
-                                  "title": title[:160], "text": text[:240], "text_sha256": sha(text)})
+    result["samples"] = samples
     return result
 
 
@@ -185,6 +191,9 @@ def _qmd_retained(path, native_path, plan_path, library, *, after):
 
 
 def audit(data_dir, plan_path, *, baseline=None):
+    if baseline is not None and baseline.get("schema") != SCHEMA:
+        raise ValueError("Before audit uses an older physical-cache format; create a v2 baseline before migration. "
+                         "Removing cached search text is not evidence of source-content loss.")
     store, plan = ReadOnlyLibraryStore(data_dir), TutorialMigrationPlan(plan_path)
     metadata = plan.metadata()
     if Path(metadata["source_catalog"]).resolve() != store.db_path.resolve():

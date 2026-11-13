@@ -114,7 +114,10 @@ class ExternalChatBridgeTests(unittest.TestCase):
         with patch("subprocess.Popen",side_effect=AssertionError("must not start Agent")), patch.object(self.app.agents,"call_tool",side_effect=AssertionError("must not attribute through managed adapter")):
             token=self.register(backend="dsh",model="gpt-6.1-sol",reasoning_effort="xhigh",conversation_id="dsh-chat-1")
             listed=self.request("/api/tools")[1]["tools"]
-            self.assertEqual(len(listed),9)
+            from advisor.planning_service import tool_definitions
+            from advisor.chat_bridge_tools import external_tool_definitions
+            self.assertEqual({tool['name'] for tool in listed},
+                             {tool['name'] for tool in tool_definitions()+external_tool_definitions()})
             self.assertNotIn("external_tool",{item["name"] for item in listed})
             register_schema=next(item["inputSchema"] for item in listed if item["name"]=="register_external_agent")
             self.assertIn("backend",register_schema["properties"])

@@ -46,7 +46,8 @@ def test_modern_qmd_modes_are_reported_independently(keyword, vector, label):
 def test_native_index_alone_does_not_claim_qmd_is_ready():
     qmd = report(corpus())["qmd"]
     assert qmd["component_available"] and not qmd["available"]
-    assert qmd["library_indexes"]["modes"]["native"]["ready"]
+    assert "native" not in qmd["library_indexes"]["modes"]
+    assert not qmd["library_indexes"]["ready"]
 
 
 def test_missing_components_and_legacy_only_corpus_remain_distinct():
@@ -55,7 +56,8 @@ def test_missing_components_and_legacy_only_corpus_remain_distinct():
     source = corpus()
     source["backends"]["qmd"].update(available=True, mode="qmd-keyword", document_count=5)
     qmd = report(source)["qmd"]
-    assert qmd["available"] and qmd["status_label"] == "旧手册关键词可用"
+    assert not qmd["available"] and qmd["status_label"] == "已安装 · 索引未就绪"
+    assert not qmd["legacy"]["searchable"]
     assert qmd["legacy"]["document_count"] == 5
 
 

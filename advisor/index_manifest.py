@@ -1,6 +1,6 @@
 """Small generation manifests and local, atomically published root pointers.
 
-Per-object retrieval paths and representation statistics belong to the native
+Per-object retrieval paths and representation statistics belong to the object
 SQLite index. A generation has one JSON authority; active/last-build only name
 that authority. Inline legacy manifests remain readable during migration.
 """
@@ -15,7 +15,7 @@ import stat
 import uuid
 
 from .build_control import check_cancelled
-from .index_paths import serialize_index_manifest
+from .index_paths import resolve_index_manifest, serialize_index_manifest
 
 MANIFEST_SCHEMA = "sim-advisor-index/v2"
 POINTER_SCHEMA = "sim-advisor-index-pointer/v1"
@@ -64,21 +64,46 @@ def pointer_target(path, value):
 
 
 def validate_pointer_authority(pointer_path, pointer, target, authority):
-    """Require the local target to describe exactly the named generation."""
+    """Validate the named generation and return its checked runtime locators."""
     if not isinstance(authority, dict) or is_manifest_pointer(authority):
         raise ValueError("Index manifest pointer chains are forbidden")
     if authority.get("generation") != pointer["generation"]:
         raise ValueError("Index pointer and generation manifest identities differ")
-    stored = serialize_index_manifest(
+    resolved = resolve_index_manifest(
         {key: authority[key] for key in _LOCATORS if key in authority}, Path(pointer_path).parent)
-    if stored.get("directory") != Path(target).parent.relative_to(Path(pointer_path).parent).as_posix():
+    if not resolved.get("directory") or Path(resolved["directory"]) != Path(target).parent.resolve():
         raise ValueError("Index pointer target describes a different generation directory")
+    return resolved
+
+
+def normalize_modes(value):
+    """Forget retired native readiness while retaining all saved QMD locators.
+
+    This is a metadata-only normalization: bridge version, generation, reuse
+    dependencies, QMD readiness and embedding records are preserved.
+    """
+    output = dict(value)
+    modes = value.get("modes")
+    if isinstance(modes, dict) and "native" in modes:
+        output["modes"] = {mode: status for mode, status in modes.items() if mode != "native"}
+        keyword = modes.get("qmd_keyword", {})
+        if (modes["native"].get("ready") and not keyword.get("ready")
+                and keyword.get("state") in {"not_built", "not_requested", None}):
+            output["modes"]["qmd_keyword"] = dict(
+                keyword, ready=False, state="not_built",
+                error="A QMD keyword index is required; build qmd_keyword for this library generation")
+        output["ready"] = any(status.get("ready") for status in output["modes"].values()
+                              if isinstance(status, dict))
+    if isinstance(value.get("requested_modes"), list):
+        output["requested_modes"] = [mode for mode in value["requested_modes"] if mode != "native"]
+    return output
 
 
 def compact_manifest(value):
     """Copy only small metadata, omitting the SQLite-owned per-object trees."""
     if not isinstance(value, dict) or is_manifest_pointer(value):
         raise ValueError("A generation manifest must be an object, not a pointer")
+    value = normalize_modes(value)
     output = {key: copy.deepcopy(item) for key, item in value.items()
               if key not in {"mapping", "representation"}}
     representation = value.get("representation")
@@ -135,7 +160,7 @@ def publish_manifest(directory, value, search_root, *, write_json=None, cancella
                      active=True, last_build=True):
     """Publish authority first, so every visible pointer has a complete target.
 
-    The caller owns the build lock/lease and has committed the native lookup.
+    The caller owns the build lock/lease and has committed the object lookup.
     Root pointer replacements are independently atomic; an interruption between
     them leaves each pointing at a complete generation.
     """
@@ -158,7 +183,7 @@ def compact_existing_index(search_root, *, ensure_lookup, write_json=None):
 
     The caller excludes writers with the build lease. ``ensure_lookup`` receives
     (objects.sqlite3, legacy_manifest) and must verify all SQL paths/statistics;
-    it may also perform a staged native migration. False means validation failed.
+    it may also perform a staged object migration. False means validation failed.
     No source parser, QMD update, embedding, or generation change is performed.
     """
     from .index_manifest_cache import read_manifest
@@ -186,7 +211,7 @@ def compact_existing_index(search_root, *, ensure_lookup, write_json=None):
                 raise ValueError("Generation manifest describes a different directory")
             database = _owned(root, directory / "objects.sqlite3")
             if not database.is_file() or ensure_lookup(database, value) is False:
-                raise ValueError("Native object lookup validation failed")
+                raise ValueError("Object lookup validation failed")
             authorities[compact["directory"]] = (path, compact)
     pointers = []
     for name in ("active.json", "last-build.json"):

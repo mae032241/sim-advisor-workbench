@@ -44,7 +44,7 @@ async def main():
                     raise RuntimeError("MCP tool failed: "+name)
                 return json.loads(result.content[0].text)
             context=await call("get_task_context",{"session_id":sid})
-            hits=await call("search_knowledge",{"query":"Mesh Element Quality","kind":"manual","mode":"native"})
+            hits=await call("search_knowledge",{"query":"Mesh Element Quality","kind":"manual","mode":"qmd_keyword"})
             source_id="cs-a67ff0e99e600d559754cdbb"
             document=await call("read_source",{"session_id":sid,"id":source_id,"offset":0,"length":10000})
             mesh=next(step for step in context["plan"]["steps"] if "网格" in step["title"])

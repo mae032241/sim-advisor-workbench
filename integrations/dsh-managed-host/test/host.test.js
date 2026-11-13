@@ -11,12 +11,12 @@ async function until(predicate) {
   assert.fail('native helper mock did not settle');
 }
 
-async function fixture(t, { resume = null, missing = false, finalFailures = 0, finalRejects = 0, holdTools = false } = {}) {
+async function fixture(t, { resume = null, missing = false, finalFailures = 0, finalRejects = 0, holdTools = false, toolDefinitions, toolValue } = {}) {
   const calls = [], events = [], eventAttempts = [], warnings = [], toolCalls = [], nativeTools = new Map(['read', 'write', 'edit', 'pwsh'].map(name => [name, {}]));
   const tools = new Map(nativeTools), sections = new Map(), listeners = new Map();
   let ready, errorSeen, disposed = 0;
   const config = { thread_id: resume, cwd: process.cwd(), provider: 'deepseek-official', model: 'deepseek-flash', reasoning_effort: 'high',
-    instructions: '保留原生编码工具；不主动求解。', tools: [{ name: 'get_task_context', description: 'Read plan', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] };
+    instructions: '保留原生编码工具；不主动求解。', tools: toolDefinitions ?? [{ name: 'get_task_context', description: 'Read plan', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] };
   const server = http.createServer(async (request, response) => {
     assert.equal(request.headers['x-dsh-bridge-token'], TOKEN);
     let text = ''; for await (const chunk of request) text += chunk;
@@ -30,7 +30,7 @@ async function fixture(t, { resume = null, missing = false, finalFailures = 0, f
       if (value.type === 'message' && finalRejects > 0) { finalRejects--; return send({accepted: false}); }
       events.push(value); return send({ accepted: true });
     }
-    if (request.url === '/tool') { toolCalls.push(value); if (holdTools) return; return send({ success: true, value: { facts: ['observed'] } }); }
+    if (request.url === '/tool') { toolCalls.push(value); if (holdTools) return; return send({ success: true, value: toolValue ?? { facts: ['observed'] } }); }
     if (request.url === '/error') { errorSeen = value; return send({ accepted: false }); }
     response.writeHead(404); response.end('{}');
   });
@@ -87,6 +87,39 @@ test('native create validates route, adds scoped tools/prompt, preserves native 
   assert.ok(['read', 'write', 'edit', 'pwsh', 'get_task_context'].every(name => f.ready.tool_names.includes(name)));
   assert.ok(f.sections.get('sim-advisor:managed-task').text.includes('不主动求解'));
   assert.ok(!JSON.stringify(f.ready).includes(TOKEN));
+});
+
+test('managed host registers contract and future tools directly from server definitions', async t => {
+  const toolDefinitions = ['get_tool_contract', 'future_planning_tool'].map(name => ({
+    name, description: 'server-owned contract guidance', inputSchema: {type: 'object', properties: {
+      tool: {type: 'string'}, path: {type: 'string'}, offset: {type: 'integer'}, length: {type: 'integer'},
+    }, required: ['tool'], additionalProperties: false},
+  }));
+  const f = await fixture(t, {toolDefinitions});
+  for (const definition of toolDefinitions) {
+    assert.equal(f.ready.tool_names.includes(definition.name), true);
+    assert.deepEqual(f.tools.get(definition.name).parameters, definition.inputSchema);
+    assert.equal(f.tools.get(definition.name).description, definition.description);
+  }
+  const arguments_ = {tool: 'save_plan', path: '/design_brief/simplification/candidates/0/status', offset: 7, length: 23};
+  await f.tools.get('get_tool_contract').execute(arguments_, {agent: f.agent, callId: 'contract-call'});
+  assert.equal(f.toolCalls[0].name, 'get_tool_contract');
+  assert.deepEqual(f.toolCalls[0].arguments, arguments_);
+  assert.equal(f.toolCalls[0].thread_id, f.agent.id);
+  await f.host.dispose();
+  for (const definition of toolDefinitions) assert.equal(f.tools.has(definition.name), false);
+});
+
+test('managed validation feedback preserves long expectations and next action while hiding its token', async t => {
+  const payload = {error: `bad arguments ${TOKEN}`, error_code: 'tool_arguments_invalid', tool: 'get_task_context',
+    errors: [{path: '/invented', code: 'additionalProperties', expected: {additionalProperties: false, description: 'x'.repeat(2500)}}],
+    next_action: {tool: 'get_tool_contract', arguments: {tool: 'get_task_context'}}};
+  const f = await fixture(t, {toolValue: {success: false, contentItems: [{type: 'inputText', text: JSON.stringify(payload)}]}});
+  const result = await f.tools.get('get_task_context').execute({invented: 1}, {agent: f.agent, callId: 'invalid-call'});
+  assert.equal(result.success, false);
+  assert.equal(result.errors[0].expected.description.length, 2500);
+  assert.deepEqual(result.next_action, payload.next_action);
+  assert.equal(JSON.stringify(result).includes(TOKEN), false);
 });
 
 test('native resume uses exact session identity and never falls back to create', async t => {

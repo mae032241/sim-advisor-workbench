@@ -7,6 +7,7 @@ from advisor.config import DATA
 from advisor.library_store import LibraryStore
 from advisor.case_metadata import FEATURE_BRANCHES, normalize_feature_branch
 from advisor.knowledge_views import related_sources_view
+from advisor.query_terms import normalize_mode, normalize_modes
 
 
 def main():
@@ -50,15 +51,15 @@ def main():
             cmd.add_argument("--model-format", choices=["compact", "legacy"], default="compact",
                              help="Model storage format; compact keeps selected settings once with source evidence links")
             cmd.add_argument("--enrich", action="store_true")
-            cmd.add_argument("--modes", default="native")
+            cmd.add_argument("--modes", default="qmd_keyword", help="QMD keyword by default; qmd_vector requires an explicit selection")
         if action == "rebind":
             cmd.add_argument("--root-id", default="main")
             cmd.add_argument("--path", required=True)
     cmd = commands.add_parser("index")
-    cmd.add_argument("--modes", default="native,qmd_keyword", help="Default: native,qmd_keyword; qmd_vector requires an explicit selection")
+    cmd.add_argument("--modes", default="qmd_keyword", help="Default: qmd_keyword; qmd_vector requires an explicit selection")
     cmd = commands.add_parser("search")
     cmd.add_argument("query")
-    cmd.add_argument("--mode", default="native", choices=["native", "qmd_keyword", "qmd_vector", "qmd_hybrid"])
+    cmd.add_argument("--mode", type=normalize_mode, default="qmd_keyword", choices=["qmd_keyword", "qmd_vector"])
     cmd.add_argument("--kind", default="all", choices=["all", "manual", "case", "code"])
     cmd.add_argument("--feature-branch", type=normalize_feature_branch, metavar="BRANCH", help="Optional category: " + ",".join(FEATURE_BRANCHES))
     cmd.add_argument("--library", action="append", dest="library_ids")
@@ -108,10 +109,10 @@ def main():
             result = store.scan(args.library_id, args.paths, args.limit)
         elif args.command == "build":
             result = store.build(args.library_id, paths=args.paths, limit=args.limit,
-                                 deep=not args.shallow, enrich=args.enrich, modes=args.modes.split(","),
+                                 deep=not args.shallow, enrich=args.enrich, modes=normalize_modes(args.modes.split(",")),
                                  model_format=args.model_format)
         elif args.command == "index":
-            result = store.reindex(args.modes.split(","))
+            result = store.reindex(normalize_modes(args.modes.split(",")))
         elif args.command == "cancel":
             result = store.cancel_build(args.job_id)
         elif args.command == "status":
@@ -142,7 +143,7 @@ def main():
         if isinstance(result, dict) and result.get("status") == "cancelled":
             return 0 if args.command == "cancel" else 130
         if args.command == "index" and isinstance(result, dict):
-            return 0 if all(result.get("modes", {}).get(mode, {}).get("ready") for mode in args.modes.split(",")) else 1
+            return 0 if all(result.get("modes", {}).get(mode, {}).get("ready") for mode in normalize_modes(args.modes.split(","))) else 1
         return 1 if isinstance(result, dict) and result.get("status") == "failed" else 0
     except (ValueError, OSError, RuntimeError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False))

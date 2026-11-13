@@ -13,7 +13,7 @@ def legacy(root, generation="current", suffix="a"):
     directory.mkdir(parents=True)
     library = "lib_" + "2" * 20
     return {"generation": generation, "directory": str(directory), "ready": True,
-            "object_count": 1, "modes": {"native": {"ready": True}},
+            "object_count": 1, "modes": {"qmd_keyword": {"ready": True}},
             "libraries": {"cases": {"key": library, "corpus": str(directory / library / "corpus"),
                                      "db_path": str(directory / library / "qmd-keyword.sqlite3")}},
             "mapping": {library + "/o-" + "3" * 32 + ".md": "citation"},
@@ -39,6 +39,34 @@ def test_publication_has_one_small_authority_and_relocatable_root_pointers(tmp_p
     loaded = cache.read_manifest(moved / "active.json")
     assert loaded == stored and loaded["generation"] == "current"
     assert "representation" not in cache.read_manifest(moved / "active.json", summary=True)
+
+
+def test_retired_native_mode_does_not_invalidate_retained_qmd_generation(tmp_path):
+    value = legacy(tmp_path)
+    value["modes"] = {"native": {"ready": True, "backend": "sqlite-fts5"},
+                      "qmd_keyword": {"ready": True, "backend": "qmd-shared-fts"},
+                      "qmd_vector": {"ready": True, "embedding_records": {"cases": [{"chunks": 9}]}}}
+    value["requested_modes"] = ["native", "qmd_keyword", "qmd_vector"]
+    value["libraries"]["cases"]["vector_reused_from_directory"] = value["directory"]
+    store_legacy(tmp_path, value)
+    before = {path: path.read_bytes() for path in (tmp_path / "active.json", tmp_path / "last-build.json")}
+    loaded = cache.read_manifest(tmp_path / "active.json")
+    assert set(loaded["modes"]) == {"qmd_keyword", "qmd_vector"} and loaded["ready"]
+    assert loaded["generation"] == value["generation"] and loaded["libraries"] == value["libraries"]
+    assert loaded["modes"]["qmd_vector"] == value["modes"]["qmd_vector"]
+    assert loaded["mapping"] == value["mapping"]
+    assert loaded["requested_modes"] == ["qmd_keyword", "qmd_vector"]
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_native_only_legacy_manifest_requests_qmd_without_claiming_readiness(tmp_path):
+    value = legacy(tmp_path)
+    value["modes"] = {"native": {"ready": True}}
+    store_legacy(tmp_path, value)
+    loaded = cache.read_manifest(tmp_path / "active.json", summary=True)
+    assert "native" not in loaded["modes"] and loaded["ready"] is False
+    assert loaded["modes"]["qmd_keyword"]["state"] == "not_built"
+    assert "QMD keyword index is required" in loaded["modes"]["qmd_keyword"]["error"]
 
 
 def test_pointer_cache_checks_authority_replacement_and_deletion(tmp_path):
@@ -166,7 +194,7 @@ def test_vector_cleanup_stamps_pointer_authority_and_updates_only_authority(tmp_
     assert result["cleaned"] and result["embedding_invoked"] is False
     assert {name: (root / name).read_bytes() for name in before} == before
     assert cache.read_manifest(root / "last-build.json")["modes"]["qmd_vector"]["state"] == "cleaned"
-    assert json.loads((partial / "manifest.json").read_text())["modes"]["native"]["ready"]
+    assert json.loads((partial / "manifest.json").read_text())["modes"]["qmd_keyword"]["ready"]
 
 
 @pytest.mark.parametrize("changed", ["pointer", "authority"])

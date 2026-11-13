@@ -3,13 +3,43 @@ import { BridgeError, parseWorkbenchUrl, requestJSON } from './http.js';
 
 export const name = 'sim-advisor-bridge';
 export const inject = ['agents', 'tools', 'systemPrompt'];
-const PLANNING_TOOLS = ['get_task_context', 'search_knowledge', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled'];
+// Compatibility only: older servers ignore ?bound=true and return mailbox
+// administration tools too. New servers own the complete bound-tool catalog.
+const LEGACY_PLANNING_TOOLS = ['get_task_context', 'search_knowledge', 'search_cases', 'get_case_guide', 'read_case_configuration', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled'];
+const LEGACY_OPTIONAL_TOOLS = ['get_plan_draft', 'repair_plan_draft', 'review_plan', 'save_plan_settings', 'get_plan_settings', 'get_mechanism_checks', 'get_tool_contract'];
 const DISPLAY_LIMIT = 15900;
 const OUTPUT = { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] };
 const objectSchema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const sameAgent = (a, b) => a?.id === b?.id && a?.session === b?.session;
 const turnId = turn => turn === undefined ? undefined : `dsh-turn-${turn}`;
 const bounded = text => text.length <= DISPLAY_LIMIT ? text : text.slice(0, DISPLAY_LIMIT) + '\n[工作台显示已截断；完整回复保留在 DSH。]';
+
+function boundDefinitions(catalog) {
+  const tools = catalog?.tools;
+  const seen = new Set(['bind_workbench', 'unbind_workbench']);
+  if (!Array.isArray(tools) || !tools.length || tools.some(definition => {
+    if (!definition || typeof definition.name !== 'string' || !definition.name || seen.has(definition.name)
+        || typeof definition.description !== 'string' || definition.inputSchema?.type !== 'object'
+        || !definition.inputSchema.properties || typeof definition.inputSchema.properties !== 'object'
+        || Array.isArray(definition.inputSchema.properties)
+        || (definition.inputSchema.required !== undefined && (!Array.isArray(definition.inputSchema.required)
+          || definition.inputSchema.required.some(key => typeof key !== 'string')))) return true;
+    seen.add(definition.name);
+    return false;
+  })) throw new BridgeError('工作台工具目录包含无效或重复定义，请更新并启动工作台后重试。');
+  if (catalog.bound === true) {
+    if (tools.some(definition => Object.hasOwn(definition.inputSchema.properties, 'session_id')
+      || Object.hasOwn(definition.inputSchema.properties, 'binding_id'))) throw new BridgeError('工作台绑定工具目录暴露了方案或凭据参数，请更新工作台后重试。');
+    return tools;
+  }
+  const definitions = LEGACY_PLANNING_TOOLS.map(name => tools.find(tool => tool.name === name));
+  if (definitions.some(definition => !definition)) throw new BridgeError('工作台缺少完整的规划与资料库工具，请更新并启动工作台后重试。');
+  for (const name of LEGACY_OPTIONAL_TOOLS) {
+    const definition = tools.find(tool => tool.name === name);
+    if (definition) definitions.push(definition);
+  }
+  return definitions;
+}
 
 function userMessage(text) {
   // Matches installed dsh-llm createUserMessage: identified immutable user data.
@@ -81,10 +111,9 @@ export class WorkbenchBridge {
     let binding;
     try {
       requirePending();
-      const catalog = await this.request(target.origin, '/api/tools', undefined, { signal });
+      const catalog = await this.request(target.origin, '/api/tools?bound=true', undefined, { signal });
       requirePending();
-      const definitions = PLANNING_TOOLS.map(tool => catalog.tools?.find(definition => definition.name === tool));
-      if (definitions.some(definition => !definition?.inputSchema?.properties)) throw new BridgeError('工作台缺少完整的规划与资料库工具，请更新并启动工作台后重试。');
+      const definitions = boundDefinitions(catalog);
       const selection = agent.model?.current?.() ?? {};
       const metadata = { name: 'DSH', pid: process.pid, backend: 'dsh', conversation_id: agent.id };
       const model = selection.model ?? agent.options?.model;
@@ -102,8 +131,10 @@ export class WorkbenchBridge {
       state.binding = binding;
       for (const definition of definitions) {
         const parameters = structuredClone(definition.inputSchema);
-        delete parameters.properties.session_id;
-        parameters.required = (parameters.required ?? []).filter(key => key !== 'session_id');
+        if (catalog.bound !== true) {
+          delete parameters.properties.session_id;
+          parameters.required = (parameters.required ?? []).filter(key => key !== 'session_id');
+        }
         binding.resources.push(agent.ctx.tools.register({ name: definition.name, description: definition.description,
           parameters, output: OUTPUT,
           execute: async (args, exec) => {
@@ -116,7 +147,16 @@ export class WorkbenchBridge {
                 { binding_id: binding.token, name: definition.name, arguments: args }, { signal: exec.signal, timeout: 180000 });
               if (!response.result || typeof response.result !== 'object') throw new BridgeError('工作台工具响应缺少 result。');
               return response.result;
-            } catch (error) { throw new BridgeError(this.#safe(error, binding)); }
+            } catch (error) {
+              if (error instanceof BridgeError && error.payload && Array.isArray(error.payload.errors)
+                  && (typeof error.payload.draft_id === 'string' || error.payload.error_code === 'tool_arguments_invalid')) {
+                // Preserve actionable field paths and the retained draft ID.
+                // They are business validation feedback, not a connection loss.
+                return JSON.parse(JSON.stringify({ success: false, ...error.payload })
+                  .replaceAll(binding.token, '[私有绑定凭据]'));
+              }
+              throw new BridgeError(this.#safe(error, binding));
+            }
           },
         }));
       }

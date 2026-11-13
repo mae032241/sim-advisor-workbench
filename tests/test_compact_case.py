@@ -94,14 +94,16 @@ def test_single_database_preserves_typed_configuration_and_context(tmp_path):
     assert source.is_file() and reader.read_raw_xml() == XML
 
 
-def test_native_contentless_index_finds_every_actual_name_selection_and_branch(tmp_path):
+def test_default_storage_keeps_all_properties_and_selections_without_local_search(tmp_path):
     _, _, _, _, output, reader, _ = build(tmp_path, extra_properties=700)
-    for term in ("hmax", "hauto", "additional_699", "inlet_selection", "网格"):
-        assert reader.search(term)[0]["id"] == 3
+    for name in ("hmax", "hauto", "additional_699"):
+        assert reader.get_property(3, name)["name"] == name
+    assert reader.read_node(3)["selections"][0]["value"]["named_references"] == ["inlet_selection", "inlet"]
+    with pytest.raises(ValueError, match="register the source library.*qmd_keyword"):
+        reader.search("hmax")
     assert len(list(reader.iter_nodes())) == 3
     with closing(sqlite3.connect(output / DATABASE)) as db:
-        assert db.execute("SELECT title,keywords FROM native_fts LIMIT 1").fetchone() == (None, None)
-        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='native_fts_content'").fetchone()
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'native_fts%'").fetchone()
         # 703 decoded property occurrences share just 3 typed values.
         assert db.execute("SELECT count(*) FROM value_pool").fetchone()[0] == 4  # 3 property values + 1 selection
         assert db.execute("SELECT count(*) FROM text_pool").fetchone()[0] == 1
@@ -131,7 +133,7 @@ def test_missing_original_keeps_normalized_information_and_reports_evidence_unav
     source, _, _, _, _, reader, _ = build(tmp_path)
     source.unlink()
     assert reader.get_property(3, "hmax")["value"] == 0.05
-    assert reader.search("hmax") and reader.read_case()["source_available"] is False
+    assert reader.read_case()["source_available"] is False
     assert reader.read_raw_evidence(3)["status"] == "unavailable"
     with pytest.raises(RawEvidenceUnavailable):
         reader.read_raw_xml()
@@ -229,13 +231,11 @@ def test_api_corroboration_reuses_same_canonical_value_and_preserves_xml_rows(tm
     assert (output / DATABASE).read_bytes() == before
 
 
-def test_new_api_default_is_searchable_without_becoming_a_saved_xml_property(tmp_path):
+def test_new_api_default_remains_readable_without_becoming_a_saved_xml_property(tmp_path):
     _, _, _, _, output, reader, case = build(tmp_path)
-    assert reader.search("hminactive") == []
     bundle = api_bundle(case, [{"api_node_id": 1, "kind": "property", "name": "hminactive", "value": True,
         "value_type": "boolean", "status": "observed", "getter": "getBoolean", "relation": "api_only"}])
     reader.add_api(bundle)
-    assert reader.search("hminactive")[0]["id"] == 3
     with pytest.raises(KeyError):
         reader.get_property(3, "hminactive")
     observed = reader.get_property(3, "hminactive", source="api")
@@ -245,7 +245,7 @@ def test_new_api_default_is_searchable_without_becoming_a_saved_xml_property(tmp
     assert evidence["source_sha256"] == case["source_sha256"] and evidence["xml_evidence"] is False
     assert "xml" not in evidence and evidence["run"]["version"] == "6.3"
     with closing(sqlite3.connect(output / DATABASE)) as db:
-        assert db.execute("SELECT keywords FROM native_fts WHERE rowid=3").fetchone()[0] is None
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name LIKE 'native_fts%'").fetchone()
 
 
 def test_different_api_value_is_explicit_and_does_not_overwrite_saved_value(tmp_path):
@@ -338,7 +338,7 @@ def test_genuine_preview_keeps_metadata_without_invented_settings_or_xml_copy(tm
     assert result["coverage"]["source_container"]["status"] == "preview_only"
     assert result["counts"] == {"nodes": 0, "properties": 0, "selections": 0, "documents": 0, "passages": 0}
     assert result["xml_member"] is None and result["xml_sha256"] is None
-    assert not reader.search("hmax") and list(reader.iter_nodes()) == []
+    assert list(reader.iter_nodes()) == []
     evidence = reader.read_raw_evidence()
     assert evidence["status"] == "unavailable" and evidence["reason"] == "preview_model_no_settings"
     with pytest.raises(RawEvidenceUnavailable, match="no saved settings"):
@@ -438,9 +438,33 @@ def test_shared_library_mode_omits_per_case_fts_and_keeps_api_readers(tmp_path):
     assert reader.get_property(3, "hmax", source="api")["value"] == 0.05
     with closing(sqlite3.connect(output / DATABASE)) as db:
         assert not db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'native_fts%'").fetchall()
-    with pytest.raises(ValueError, match="shared native index"):
+    with pytest.raises(ValueError, match="register the source library.*qmd_keyword"):
         reader.search("hmax")
     assert [path.name for path in output.iterdir()] == [DATABASE]
-    rebuilt = build_compact_case(source, output, parser=parser, signature="fixture/v1", native_index=True)
-    assert not rebuilt["cache_hit"] and rebuilt["native_index"] is True
-    assert CompactCase(output).search("hmax")
+    original = (output / DATABASE).read_bytes()
+    with pytest.raises(ValueError, match="native search is retired"):
+        build_compact_case(source, output, parser=parser, signature="fixture/v1", native_index=True)
+    assert (output / DATABASE).read_bytes() == original
+
+
+def test_existing_artifact_with_historical_fts_reuses_nodes_without_rebuild_or_refresh(tmp_path):
+    source, _, parser, calls, output, reader, case = build(tmp_path)
+    with closing(sqlite3.connect(output / DATABASE)) as db, db:
+        db.execute("CREATE VIRTUAL TABLE native_fts USING fts5(title,keywords,content='',tokenize='unicode61')")
+        db.execute("INSERT INTO native_fts(rowid,title,keywords) VALUES(3,'Mesh','hmax')")
+        nodes = db.execute("SELECT * FROM nodes ORDER BY id").fetchall()
+    with closing(sqlite3.connect(output / DATABASE)) as db:
+        postings = db.execute("SELECT * FROM native_fts_data ORDER BY id").fetchall()
+    original = (output / DATABASE).read_bytes()
+    reused = build_compact_case(source, output, parser=parser, signature="fixture/v1")
+    assert reused["cache_hit"] and len(calls) == 1 and reused["native_index"] is False
+    assert (output / DATABASE).read_bytes() == original
+    with pytest.raises(ValueError, match="register the source library.*qmd_keyword"):
+        reader.search("hmax")
+    reader.add_api(api_bundle(case, [{"api_node_id": 1, "name": "hmax", "value": 0.05, "status": "observed",
+                                     "value_type": "double", "getter": "getDouble", "relation": "corroborates_saved_xml"}]))
+    with closing(sqlite3.connect(output / DATABASE)) as db:
+        assert db.execute("SELECT * FROM nodes ORDER BY id").fetchall() == nodes
+        assert db.execute("SELECT * FROM native_fts_data ORDER BY id").fetchall() == postings
+    assert reader.get_property(3, "hmax")["value"] == 0.05
+    assert reader.get_property(3, "hmax", source="api")["value"] == 0.05

@@ -55,6 +55,7 @@ class CodexRuntime:
         self._reader = self._writer = None
         self._thread_id = self._turn_id = None
         self._state, self._last_error = "new", None
+        self._last_turn = self._error_metadata = None
         self._closed = False
         self._completed_turns = []
         self._tool_phases = []
@@ -93,7 +94,32 @@ class CodexRuntime:
                     "state": self._state, "thread_id": self._thread_id, "turn_id": self._turn_id,
                     "pid": self._process.pid if self._process else None, "model": self.model,
                     "reasoning_effort": self.reasoning_effort,
-                    "last_error": self._last_error}
+                    "last_error": self._last_error,
+                    "turn_outcome_supported": True,
+                    "last_turn": dict(self._last_turn) if self._last_turn else None,
+                    "error_metadata": dict(self._error_metadata) if self._error_metadata else None}
+
+    @staticmethod
+    def _error_info(error, *, will_retry=None, turn_id=None):
+        """Keep only protocol categories and bounded numeric diagnostics.
+
+        Error messages/additionalDetails may contain prompts or credentials.
+        Unknown categories and missing retry flags never imply a retry.
+        """
+        error = error if isinstance(error, dict) else {}
+        info = error.get("codexErrorInfo")
+        category = info if isinstance(info, str) else next(iter(info), None) if isinstance(info, dict) and len(info) == 1 else None
+        allowed = {"contextWindowExceeded", "usageLimitExceeded", "httpConnectionFailed", "httpTooManyRequests",
+                   "responseStreamConnectionFailed", "responseStreamDisconnected", "responseStreamTooManyFailedAttempts",
+                   "internalServerError", "unauthorized", "badRequest", "sandboxError", "threadRollbackFailed", "other"}
+        result = {"code": "codex_error", "category": category if category in allowed else "unknown",
+                  "will_retry": will_retry if type(will_retry) is bool else None,
+                  "turn_id": turn_id if isinstance(turn_id, str) and len(turn_id) <= 256 else None}
+        detail = info.get(category) if isinstance(info, dict) and category in allowed else None
+        http_status = detail.get("httpStatusCode") if isinstance(detail, dict) else None
+        if type(http_status) is int and 100 <= http_status <= 599:
+            result["http_status"] = http_status
+        return result
 
     def _send_packet(self, packet):
         data = (json.dumps(packet, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -183,10 +209,12 @@ class CodexRuntime:
             if self._closed or self._state == "error":
                 return
             self._state, self._last_error = "error", message
+            self._error_metadata = {"code": code, "category": "runtime_failure", "will_retry": False,
+                                    "turn_id": self._turn_id}
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(CodexRuntimeError(message))
-        self._emit({"type": "error", "code": code, "message": message, "will_retry": False})
+        self._emit({"type": "error", "message": message, "fatal": True, **self._error_metadata})
         self._stop_process()
 
     @staticmethod
@@ -293,6 +321,7 @@ class CodexRuntime:
                 previous_state = self._state
                 if mode == "start":
                     self._state = "starting_turn"
+                    self._last_turn = self._error_metadata = self._last_error = None
             params = {"threadId": thread_id, "input": [{"type": "text", "text": text}]}
             if mode == "steer":
                 params["expectedTurnId"] = turn_id
@@ -303,7 +332,7 @@ class CodexRuntime:
             try:
                 result = self._request("turn/steer" if mode == "steer" else "turn/start", params)
                 accepted = result.get("turnId") if mode == "steer" else result.get("turn", {}).get("id")
-                if not isinstance(accepted, str) or not accepted or (mode == "steer" and accepted != turn_id):
+                if not isinstance(accepted, str) or not accepted or len(accepted) > 256 or (mode == "steer" and accepted != turn_id):
                     self._fail("protocol_error", "Codex returned an invalid turn identity.")
                     raise CodexRuntimeError("Codex returned an invalid turn identity.")
                 with self._lock:
@@ -356,20 +385,30 @@ class CodexRuntime:
         if method in {"turn/started", "turn/completed"}:
             turn = params.get("turn", {})
             turn_id, status = turn.get("id"), turn.get("status")
-            if not isinstance(turn_id, str) or status not in ({"inProgress"} if method.endswith("started") else {"completed", "interrupted", "failed"}):
+            if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 256 or status not in ({"inProgress"} if method.endswith("started") else {"completed", "interrupted", "failed"}):
                 return
             with self._lock:
                 if method == "turn/started":
                     if turn_id in self._completed_turns:
                         return
+                    if self._turn_id != turn_id:
+                        self._last_turn = self._error_metadata = self._last_error = None
                     self._turn_id, self._state = turn_id, "busy"
                 else:
+                    if turn_id in self._completed_turns or self._turn_id not in (None, turn_id):
+                        return  # Delayed prior-turn notifications cannot replace the current outcome.
                     self._completed_turns = (self._completed_turns + [turn_id])[-64:]
+                    self._last_turn = {"turn_id": turn_id, "status": status}
+                    if status == "completed":
+                        self._error_metadata = self._last_error = None
+                    elif status == "failed":
+                        self._error_metadata = self._error_info(turn.get("error"), will_retry=False, turn_id=turn_id)
                     if self._turn_id in (None, turn_id):
                         self._turn_id, self._state, self._interrupt_pending = None, "idle", False
             if method == "turn/completed":
                 self._flush_deltas(turn_id=turn_id)
-            self._emit({"type": "turn", "event": "started" if method.endswith("started") else "completed", "status": status, "turn_id": turn_id})
+            self._emit({"type": "turn", "event": "started" if method.endswith("started") else "completed", "status": status, "turn_id": turn_id,
+                        "error_metadata": dict(self._error_metadata) if self._error_metadata else None})
             if method == "turn/started":
                 self._dispatch_pending_interrupt()
         elif method == "item/agentMessage/delta" and isinstance(params.get("delta"), str):
@@ -387,7 +426,15 @@ class CodexRuntime:
                 name = item.get("tool") if item.get("type") in {"dynamicToolCall", "mcpToolCall"} else item["type"]
                 self._tool_event("started" if method.endswith("started") else "completed", name, item.get("id"), ids["turn_id"], item.get("success"))
         elif method == "error":
-            self._emit({"type": "error", "code": "codex_error", "message": "Codex reported an error.", "will_retry": bool(params.get("willRetry")), "turn_id": ids["turn_id"]})
+            with self._lock:
+                turn_id = ids["turn_id"]
+                if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 256:
+                    turn_id = self._turn_id
+                if turn_id in self._completed_turns or (self._turn_id and turn_id != self._turn_id):
+                    return
+                self._error_metadata = self._error_info(params.get("error"), will_retry=params.get("willRetry"), turn_id=turn_id)
+                metadata = dict(self._error_metadata)
+            self._emit({"type": "error", "message": "Codex reported an error.", "fatal": False, **metadata})
 
     def _visible_delta(self, text, ids):
         key = (ids["turn_id"], ids["item_id"])

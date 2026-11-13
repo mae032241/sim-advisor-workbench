@@ -20,12 +20,13 @@ import threading
 import time
 import uuid
 
-from . import native_index
+from . import object_index
 from .build_control import BuildCancelled, BuildControl, build_control, check_cancelled
 from .index_manifest import _owned, stored_manifest
-from .library_search import BRIDGE_VERSION, LibrarySearch, REPRESENTATION_CHARS, SHARED_KEYWORD_STORAGE, _cjk_tokens, _json, _representation
+from .library_search import BRIDGE_VERSION, LibrarySearch, REPRESENTATION_CHARS, SHARED_KEYWORD_STORAGE, _json, _representation
 from .tutorial_migration import TutorialMigrationPlan
 from .process_runner import run_text
+from .qmd_shared import keyword_input_spool
 
 QMD_VERSION = "2.8.3"
 _FILENAME = re.compile(r"o-[a-f0-9]{32}\.md\Z")
@@ -36,7 +37,6 @@ _MANUAL_SQL_WORKER = r'''
 import {readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {inflateSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 const req=JSON.parse(readFileSync(0,'utf8'));
@@ -53,6 +53,7 @@ const progress=(completed,total,phase)=>{
 const db=openDatabase(req.db_path);
 const Database=createRequire(pathToFileURL(join(req.qmd_dir,'package.json')))('better-sqlite3');
 const native=new Database(req.native_path,{readonly:true,fileMustExist:true});
+const inputs=new Database(req.inputs_path,{readonly:true,fileMustExist:true});
 const plan=new Database(req.plan_path,{readonly:true,fileMustExist:true});
 try{
   const total=plan.prepare('SELECT count(*) AS n FROM canonical_objects WHERE library_id=?').get(req.library_id).n;
@@ -72,11 +73,14 @@ try{
       if(++retiredProcessed%1000===0)progress(retiredProcessed,retireTotal,'retiring_manual_keyword_delta');
     }
     progress(0,total,'inserting_manual_keyword_delta');
-    const findNative=native.prepare('SELECT id,qmd_path,search_input FROM objects WHERE id=? AND library_id=?');
+    const findNative=native.prepare('SELECT id,qmd_path FROM objects WHERE id=? AND library_id=?');
+    const findInput=inputs.prepare('SELECT title,text FROM keyword_inputs WHERE library_id=? AND qmd_path=?');
     for(const canonical of plan.prepare('SELECT id FROM canonical_objects WHERE library_id=? ORDER BY id').iterate(req.library_id)){
       const row=findNative.get(canonical.id,req.library_id);
       if(!row)throw new Error('Canonical native row missing');
-      const [originalTitle,text]=JSON.parse(inflateSync(row.search_input).toString('utf8'));
+      const input=findInput.get(req.library_id,row.qmd_path);
+      if(!input)throw new Error('Canonical keyword input missing');
+      const {title:originalTitle,text}=input;
       const filename=row.qmd_path.split('/').pop();
       if(!/^o-[a-f0-9]{32}\.md$/.test(filename))throw new Error('Invalid canonical QMD filename');
       const content=('# '+originalTitle+'\n\n'+text).replaceAll('\n',req.newline);
@@ -96,7 +100,7 @@ try{
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   progress(inserted,total,'inserted_manual_keyword_delta');
   process.stdout.write('TUTORIAL_SQL_RESULT='+JSON.stringify({inserted,retired,timestamp_origin:'import_time'})+'\n');
-}finally{plan.close();native.close();db.close();}
+}finally{plan.close();inputs.close();native.close();db.close();}
 '''
 
 
@@ -187,7 +191,7 @@ def _desired_fingerprints(store, plan, callback):
 
 
 def _delete_native(db, plan, callback):
-    """Delete original FTS tokens and keep retired QMD paths in TEMP storage."""
+    """Delete shared metadata and keep retired QMD paths in TEMP storage."""
     db.execute("CREATE TEMP TABLE tutorial_retired(id TEXT PRIMARY KEY,library_id TEXT NOT NULL,qmd_path TEXT)")
     db.executemany("INSERT INTO temp.tutorial_retired(id,library_id) VALUES(?,?)",
                    ((row["id"], row["library_id"]) for row in plan.iter_retirements()))
@@ -195,26 +199,15 @@ def _delete_native(db, plan, callback):
     if db.execute("SELECT count(*) FROM temp.tutorial_retired r JOIN objects o ON o.id=r.id AND o.library_id=r.library_id").fetchone()[0] != expected:
         raise ValueError("Native index does not contain every planned retirement")
     db.execute("UPDATE temp.tutorial_retired SET qmd_path=(SELECT qmd_path FROM objects WHERE objects.id=tutorial_retired.id)")
-    completed = 0
-    with closing(db.execute("SELECT o.rowid,o.id,o.search_input FROM objects o JOIN temp.tutorial_retired r ON r.id=o.id")) as rows:
-        for rowid, identity, raw in rows:
-            check_cancelled()
-            title, text, cjk = native_index.unpack(raw)
-            db.execute("INSERT INTO object_fts(object_fts,rowid,id,title,text,cjk) VALUES('delete',?,?,?,?,?)",
-                       (rowid, identity, title, text, cjk))
-            completed += 1
-            if completed % 1000 == 0:
-                _progress(callback, "retiring_native", completed, expected)
-    db.execute("DELETE FROM objects WHERE id IN (SELECT id FROM temp.tutorial_retired)")
+    completed = db.execute("DELETE FROM objects WHERE id IN (SELECT id FROM temp.tutorial_retired)").rowcount
     _progress(callback, "retired_native", completed, expected)
     return completed
 
 
 def _native_summary(db):
     indexed = truncated = count = 0
-    for (raw,) in db.execute("SELECT representation_json FROM objects"):
+    for _, stats in object_index.iter_representation_stats(db):
         check_cancelled()
-        stats = native_index.unpack(raw)
         indexed += stats.get("indexed_characters", 0)
         truncated += int(bool(stats.get("truncated")))
         count += 1
@@ -300,24 +293,40 @@ def _clean_qmd(path, library, native, *, mutate):
         return actual
 
 
-def _export_manual(native, library, corpus, callback):
+def _export_manual(native, library, corpus, callback, *, inputs_path, previous_path=None):
+    """Export new exact inputs and retained QMD bodies only for the SDK update."""
     corpus.mkdir(parents=True, exist_ok=False)
     total = native.execute("SELECT count(*) FROM objects WHERE library_id=?", (library,)).fetchone()[0]
     completed = 0
-    for locator, raw in native.execute("SELECT qmd_path,search_input FROM objects WHERE library_id=? ORDER BY id", (library,)):
-        check_cancelled()
-        filename = locator.split("/", 1)[-1]
-        if not _FILENAME.fullmatch(filename):
-            raise ValueError("Manual native lookup has an invalid QMD filename")
-        title, text, _ = native_index.unpack(raw)
-        (corpus / filename).write_text("# " + title + "\n\n" + text, encoding="utf-8")
-        completed += 1
-        if completed % 1000 == 0:
-            _progress(callback, "exporting_manual_keyword", completed, total)
+    with closing(_connect(inputs_path, read_only=True)) as inputs:
+        previous = _connect(previous_path, read_only=True) if previous_path is not None else None
+        try:
+            for (locator,) in native.execute("SELECT qmd_path FROM objects WHERE library_id=? ORDER BY id", (library,)):
+                check_cancelled()
+                filename = locator.split("/", 1)[-1]
+                if not _FILENAME.fullmatch(filename):
+                    raise ValueError("Manual object lookup has an invalid QMD filename")
+                added = inputs.execute("SELECT title,text FROM keyword_inputs WHERE library_id=? AND qmd_path=?",
+                                       (library, locator)).fetchone()
+                if added is not None:
+                    body = ("# " + added[0] + "\n\n" + added[1]).replace("\n", os.linesep)
+                else:
+                    saved = previous.execute("""SELECT c.doc FROM documents d JOIN content c ON c.hash=d.hash
+                        WHERE d.collection='objects' AND d.path=? AND d.active=1""", (filename,)).fetchone() if previous is not None else None
+                    if saved is None:
+                        raise ValueError("Retained QMD keyword body is missing")
+                    body = saved[0]
+                (corpus / filename).write_bytes(body.encode("utf-8"))
+                completed += 1
+                if completed % 1000 == 0:
+                    _progress(callback, "exporting_manual_keyword", completed, total)
+        finally:
+            if previous is not None:
+                previous.close()
     _progress(callback, "exported_manual_keyword", completed, total)
 
 
-def _manual_sql_delta(engine, path, library, native_path, plan, callback, *, timeout=1800):
+def _manual_sql_delta(engine, path, library, native_path, plan, callback, *, inputs_path, timeout=1800):
     """Use the released SDK's exact title/CJK helpers in one SQL transaction."""
     path = Path(path)
     with closing(_connect(path)) as db:
@@ -330,6 +339,7 @@ def _manual_sql_delta(engine, path, library, native_path, plan, callback, *, tim
     progress_path = path.with_name("qmd-keyword.progress.json")
     request = {"qmd_dir": str(engine.qmd_dir), "db_path": str(path), "library_id": library,
                "native_path": str(Path(native_path).resolve()), "plan_path": str(plan.path),
+               "inputs_path": str(Path(inputs_path).resolve()),
                "progress_path": str(progress_path), "newline": os.linesep}
     stopped = threading.Event()
     control = BuildControl(progress_path.with_name("qmd-keyword.cancel"), stopped)
@@ -394,8 +404,8 @@ def stage_tutorial_indexes(store, plan, on_progress=None, *, engine_factory=Libr
         raise ValueError("Legacy tutorial index migration does not support shared keyword collections; "
                          "this completed one-time migration requires the original per-library keyword layout")
     if (not old or old.get("bridge_version") != BRIDGE_VERSION or old.get("generation") != metadata["source_generation"] or
-            not all(old.get("modes", {}).get(mode, {}).get("ready") for mode in ("native", "qmd_keyword"))):
-        raise ValueError("Current ready native and QMD keyword indexes must match the tutorial plan")
+            not old.get("modes", {}).get("qmd_keyword", {}).get("ready")):
+        raise ValueError("Current ready QMD keyword index must match the tutorial plan")
     if engine._qmd_version() != QMD_VERSION:
         raise ValueError("Tutorial index migration requires QMD 2.8.3")
     fingerprint, generation, count = _desired_fingerprints(store, plan, on_progress)
@@ -408,15 +418,20 @@ def stage_tutorial_indexes(store, plan, on_progress=None, *, engine_factory=Libr
         destination = directory / "objects.sqlite3"
         _progress(on_progress, "copying_native", unit="databases")
         _backup(source_native, destination)
+        object_index.slim_object_index(destination, dry_run=False, offline=True)
         libraries, corpus_directories = {}, []
         affected = {row["library_id"]: row for row in summary["affected_libraries"]}
         canonical_owner = metadata["canonical_library_id"]
-        with closing(_connect(destination)) as native:
-            if not native_index.owned_schema(native):
-                raise ValueError("Tutorial migration requires the compact native v2 schema")
+        with keyword_input_spool(directory) as inputs, closing(_connect(destination)) as native:
+            if not object_index.owned_schema(native) or not object_index.is_compact(native):
+                raise ValueError("Tutorial migration requires the owned compact object schema")
             if native.execute("SELECT count(*) FROM objects").fetchone()[0] != old.get("object_count"):
                 raise ValueError("Source native count differs from its active manifest")
             with native:
+                # Retire historical independent postings in the staged copy.
+                # Canonical insertions now update shared metadata only.
+                if object_index.has_legacy_fts(native):
+                    native.execute("DROP TABLE object_fts")
                 retired = _delete_native(native, plan, on_progress)
                 inserted = 0
                 for item in plan.iter_canonical_objects():
@@ -424,12 +439,12 @@ def stage_tutorial_indexes(store, plan, on_progress=None, *, engine_factory=Libr
                     if item["library_id"] != canonical_owner:
                         raise ValueError("Canonical tutorial objects must belong to the manual owner")
                     text, stats = _representation(item)
-                    native_index.insert_object(native, item, text, stats, " ".join(_cjk_tokens(item["title"] + " " + text)), standalone=False)
+                    object_index.insert_object(native, item, text, stats, "", standalone=False)
+                    inputs.add(item["library_id"], object_index.qmd_path(item), item["title"], text)
                     inserted += 1
                     if inserted % 1000 == 0:
                         _progress(on_progress, "inserting_canonical_native", inserted, summary["counts"]["canonical_objects"])
-                native.execute("INSERT INTO object_fts(object_fts) VALUES('optimize')")
-                native.execute("INSERT INTO object_fts(object_fts) VALUES('integrity-check')")
+            inputs.seal()
             representation = _native_summary(native)
             if representation["object_count"] != count or _native_generation(native) != generation:
                 raise ValueError("Staged native identities differ from the planned catalog generation")
@@ -442,20 +457,21 @@ def stage_tutorial_indexes(store, plan, on_progress=None, *, engine_factory=Libr
                         "vector_db_path": str(directory / key / "qmd-vector.sqlite3")}
                 delta = affected.get(library, {})
                 if library == canonical_owner and (delta.get("retired") or delta.get("inserted")):
+                    previous = old.get("libraries", {}).get(library)
+                    if not previous or previous.get("key") != key:
+                        raise ValueError("Canonical manual owner has no previous keyword database")
                     if manual_strategy == "sdk":
-                        _export_manual(native, library, Path(item["corpus"]), on_progress)
+                        _export_manual(native, library, Path(item["corpus"]), on_progress,
+                                       inputs_path=inputs.path, previous_path=_owned(root, Path(previous["db_path"])))
                         corpus_directories.append(item["corpus"])
                         _progress(on_progress, "rebuilding_manual_keyword", completed - 1, len(totals), "indexes", library_id=library)
                         engine._engine({"op": "update", **item, "embedding_enabled": False, "model_uri": None}, timeout=keyword_timeout)
                         item["tutorial_keyword_update"] = "canonical_manual_rebuild"
                     else:
-                        previous = old.get("libraries", {}).get(library)
-                        if not previous or previous.get("key") != key:
-                            raise ValueError("Canonical manual owner has no previous keyword database")
                         _backup(_owned(root, Path(previous["db_path"])), Path(item["db_path"]))
                         _progress(on_progress, "updating_manual_keyword_delta", unit="indexes", library_id=library)
                         item["tutorial_keyword_delta"] = _manual_sql_delta(engine, item["db_path"], library, destination,
-                                                                         plan, on_progress, timeout=keyword_timeout)
+                                                                         plan, on_progress, inputs_path=inputs.path, timeout=keyword_timeout)
                         item["tutorial_keyword_update"] = "canonical_manual_sql_delta"
                     _clean_qmd(item["db_path"], library, native, mutate=True)
                 else:
@@ -472,14 +488,13 @@ def stage_tutorial_indexes(store, plan, on_progress=None, *, engine_factory=Libr
                 raise ValueError("Staged native SQLite integrity check failed")
         manifest = {"ready": True, "generation": generation, "corpus_hash": fingerprint, "directory": str(directory),
                     "object_count": count, "libraries": libraries, "bridge_version": BRIDGE_VERSION,
-                    "object_lookup": {"schema": native_index.LOOKUP_SCHEMA}, "representation": representation,
-                    "modes": {"native": {"ready": True, "state": "ready", "backend": "sqlite-fts5"},
-                              "qmd_keyword": {"ready": True, "state": "ready", "backend": "qmd-searchLex", "qmd_version": QMD_VERSION},
+                    "object_lookup": {"schema": object_index.LOOKUP_SCHEMA}, "representation": representation,
+                    "modes": {"qmd_keyword": {"ready": True, "state": "ready", "backend": "qmd-searchLex", "qmd_version": QMD_VERSION},
                               "qmd_vector": {"ready": False, "state": "disabled", "enabled": False}},
                     "tutorial_migration": {"migration_id": metadata["migration_id"], "source_generation": old["generation"],
                                            "retired_objects": retired, "canonical_objects": inserted, "embedding_invoked": False,
                                            "stage_seconds": round(time.monotonic() - started, 2)}}
-        native_index.validate_manifest_lookup(destination, manifest)
+        object_index.validate_manifest_lookup(destination, manifest)
         _progress(on_progress, "indexes_staged", count, count)
         return {"manifest": stored_manifest(manifest, root), "directory": str(directory), "native_path": str(destination),
                 "corpus_directories": corpus_directories, "previous_manifest": stored_manifest(old, root),

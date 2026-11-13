@@ -1,6 +1,6 @@
 # Sim Advisor Workbench
 
-本地 COMSOL 仿真方案工作台。当前 DSH 插件版本为 **0.2.49**，同时提供独立 Python 服务、CLI 和 MCP 桥接。
+本地 COMSOL 仿真方案工作台。当前 DSH 插件版本为 **0.2.63**，版本以 [package.json](integrations/dsh-sim-workbench/package.json) 为准，同时提供独立 Python 服务、CLI 和 MCP 桥接。
 
 工作台将需求、STEP/STP/MPH 模型事实、用户回答、资料引用和方案版本放在同一流程中。规划工具由独立的 `PlanningService` 提供，模型后端通过适配器接入。保存方案与聊天回复分别管理，结构校验和用户确认不能替代工程验证。
 
@@ -24,7 +24,7 @@ DSH 插件和 JavaScript 测试需要 Node.js 24.9 或更新版本。DSH、Codex
 python scripts/build_dsh_workbench.py
 ```
 
-将生成的 `dist/sim-advisor-workbench-0.2.49.tgz` 通过 DSH 官方插件管理器安装。应安装构建后的 `.tgz` 包；源码目录缺少打包时组装的运行资源，不能直接作为完整插件安装。配置数据目录和所需依赖后，可通过侧栏或 `start_workbench` 启动，通过 `create_workbench_plan` 创建方案并绑定当前会话。
+将生成的 `dist/sim-advisor-workbench-0.2.63.tgz` 通过 DSH 官方插件管理器安装。应安装构建后的 `.tgz` 包；源码目录缺少打包时组装的运行资源，不能直接作为完整插件安装。配置数据目录和所需依赖后，可通过侧栏或 `start_workbench` 启动，通过 `create_workbench_plan` 创建方案并绑定当前会话。
 
 详见 [插件打包](docs/dsh-plugin-package.md)、[DSH 接入](docs/dsh-workbench.md) 和 [可选依赖](docs/offline-dependencies.md)。
 
@@ -50,17 +50,21 @@ python workbench_mcp.py --url http://127.0.0.1:8765
 
 ## 资料与检索
 
-支持登记手册或模型目录，原始来源由用户管理。默认检索为原生 SQLite FTS/BM25；QMD 关键词检索是可选扩展。向量构建需手动选择，embedding 默认关闭，不在普通启动时自动下载模型或构建向量。COMSOL Deep API 读取依赖用户自备的可用 COMSOL 安装。
+支持登记手册或模型目录，原始来源由用户管理。默认检索为 QMD 关键词：项目术语扩展后以 OR 执行一次 BM25 查询；可选向量检索默认关闭。向量构建需手动选择，embedding 默认关闭，不在普通启动时自动下载模型或构建向量。COMSOL Deep API 读取依赖用户自备的可用 COMSOL 安装。
 
 ```powershell
 python library_cli.py --help
 python library_cli.py add "我的资料" --type user-manuals --path "<资料目录>"
-python library_cli.py build LIBRARY_ID --modes native
+python library_cli.py build LIBRARY_ID --modes qmd_keyword
 python library_cli.py enable LIBRARY_ID
 python library_cli.py search "网格收敛" --library LIBRARY_ID
 ```
 
 库类型中的“官方/自定义”是登记声明。读取到的设置、文档说明与 Agent 推断分别处理；缺失字段不能视为不存在。普通规划、检索和离线提取不执行 COMSOL 求解。几何准备等专用脚本的执行范围见各自说明。
+
+案例发现、逐环节配置读取和设置迁移见 [案例导航](docs/case-navigation.md)，机制与实施落点检查见 [机制检查](docs/mechanism-checks.md)，准确字段与分页方式见 [工具契约](docs/tool-contract-transports.md)。QMD 兼容与维护步骤见 [统一检索说明](docs/qmd-unification.md)。
+
+方法卡是可选实验模块，提供短目录和逐节方法说明，普通启动不会自动构造或启用。方法卡用于寻找原始证据；卡上的引用不授予当前规划会话阅读权限，也不证明方法适用、配置生效或求解成功。源码发布不附已构造的方法卡、来源内容、运行记录或实验成绩，详见 [实验性方法卡](docs/case-navigation.md#实验性方法卡)。
 
 ## 源码与测试
 

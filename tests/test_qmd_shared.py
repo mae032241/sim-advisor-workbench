@@ -7,10 +7,10 @@ import threading
 
 import pytest
 
-from advisor import native_index
+from advisor import object_index as native_index
 from advisor.build_control import BuildCancelled, BuildControl, build_control
 from advisor.library_search import LibrarySearch
-from advisor.qmd_shared import build_keyword_index, merge_keyword_indexes, purge_collection, _key
+from advisor.qmd_shared import build_keyword_index, keyword_input_spool, merge_keyword_indexes, purge_collection, _key
 from test_tutorial_index_migration import qmd_schema, qmd_insert
 
 
@@ -71,16 +71,17 @@ def test_merge_preserves_raw_crlf_titles_hashes_deduplicates_and_remerges_shared
     assert again["collections"] == report["collections"]
 
 
-def test_native_build_matches_sdk_title_hash_body_without_markdown_exports(tmp_path):
+def test_temporary_input_build_matches_sdk_title_hash_body_without_markdown_exports(tmp_path):
     search, options = runtime(tmp_path)
-    native = tmp_path / "native.sqlite3"
     objects = [{"id": "n1", "library_id": "a", "title": "Notes", "text": "## Secondary\n网格 日本語 한국어\r\n", "kind": "manual", "data": {}},
                {"id": "n2", "library_id": "b", "title": "First\nSecond", "text": "Preserve CRLF\r\n", "kind": "case", "data": {}}]
-    with closing(sqlite3.connect(native)) as db, db:
-        native_index.create_schema(db)
+    with keyword_input_spool(tmp_path) as inputs:
         for obj in objects:
-            native_index.insert_object(db, obj, obj["text"], {"indexed_characters": len(obj["text"])}, "", standalone=False)
-    report = build_keyword_index(native, tmp_path / "shared.sqlite3", **options)
+            inputs.add(obj["library_id"], native_index.qmd_path(obj), obj["title"], obj["text"])
+        inputs.seal()
+        input_path = inputs.path
+        report = build_keyword_index(input_path, tmp_path / "shared.sqlite3", **options)
+    assert not input_path.exists()
     assert report["documents"] == 2
     assert not list(tmp_path.glob("**/corpus"))
     for obj in objects:

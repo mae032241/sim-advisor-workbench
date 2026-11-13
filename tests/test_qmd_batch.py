@@ -9,11 +9,19 @@ from advisor import library_search as module
 from advisor.build_control import BuildCancelled, BuildControl, build_control
 from advisor.index_manifest import publish_manifest
 from advisor.library_search import LibrarySearch
-from advisor import native_index
+from advisor.query_terms import lex_terms
+from advisor.qmd_worker import QmdWorker, close_workers
+from advisor import object_index
 from test_library_search import enable_test_embedding, obj
 
 
 NODE = shutil.which("node")
+
+
+@pytest.fixture(autouse=True)
+def release_query_workers():
+    yield
+    close_workers()
 
 FAKE_SDK = r"""
 import {readFileSync,appendFileSync} from 'node:fs';
@@ -30,20 +38,23 @@ export async function createStore(options){
       return {
         get:()=>({path:'corpus'}),
         run:path=>{if(sql.includes('INSERT OR IGNORE INTO temp.query_scope_paths'))paths.add(path);},
-        all:()=>sql.includes('PRAGMA main.table_info')?
-          ['id','collection','path','hash','title','active','doc','filepath','body'].map(name=>({name})):
-          hits().map((hit,id)=>({id:id+1,path:hit.filepath.split('/').at(-1),title:hit.title,hash:'hash-'+id}))
+        all:(...args)=>{
+          if(sql.includes('AS bm25_score')){
+            trace('keyword',{db:options.dbPath,match:args[0],limit:args.at(-1),paths:[...paths]});
+            if(spec.fail)throw new Error('injected library failure');
+            return hits().slice(0,args.at(-1)).map(hit=>({filepath:hit.filepath,bm25_score:-4}));
+          }
+          return sql.includes('PRAGMA main.table_info')?
+            ['id','collection','path','hash','title','active','doc','filepath','body'].map(name=>({name})):
+            hits().map((hit,id)=>({id:id+1,path:hit.filepath.split('/').at(-1),title:hit.title,hash:'hash-'+id}));
+        }
       };
     }
   };
   return {
     internal:{db,llm:{embed:async(query,options)=>{trace('embed',{db:options.dbPath,model:options.model});return {embedding:[1,0]};}},
       searchVec:async(query,identity,limit)=>{trace('vector',{db:options.dbPath,identity});return hits().slice(0,limit).map(hit=>({...hit,source:'vec'}));}},
-    searchLex:async(query,options)=>{
-      trace('keyword',{db:options.dbPath,query,limit:options.limit,paths:[...paths]});
-      if(spec.fail)throw new Error('injected library failure');
-      return hits().slice(0,options.limit);
-    },
+    searchLex:()=>{throw new Error('Official searchLex forbidden');},
     close:async()=>{trace('close',{db:options.dbPath});}
   };
 }
@@ -57,6 +68,7 @@ def sdk_fixture(tmp_path, *, embedding=False):
     (sdk / "dist").mkdir(parents=True)
     (sdk / "package.json").write_text(json.dumps({"type": "module", "version": "2.8.3"}), encoding="utf-8")
     (sdk / "dist/index.js").write_text(FAKE_SDK, encoding="utf-8")
+    (sdk / "dist/store.js").write_text("export const normalizeCjkForFTS=term=>term;", encoding="utf-8")
     (sdk / "dist/llm.js").write_text("export const formatQueryForEmbedding=(query,model)=>query;", encoding="utf-8")
     if embedding:
         enable_test_embedding(tmp_path / "search")
@@ -75,7 +87,7 @@ def query_request(tmp_path, library, *, op="keyword", hits=None, fail=False):
                      "source": "fts", "body": "Unneeded SDK body", "title": library, "chunkPos": 11}]
     database.write_text(json.dumps({"hits": rows, "fail": fail}), encoding="utf-8")
     return {"op": op, "library_key": library, "db_path": str(database), "corpus": str(directory / "corpus"),
-            "query": "hmax", "queries": ["hmax"], "limit": 5}
+            "query": "hmax", "keyword_terms": lex_terms("hmax"), "limit": 5}
 
 
 def events(path):
@@ -90,18 +102,21 @@ def test_real_node_batch_imports_sdk_once_closes_every_store_and_preserves_singl
     search, trace = sdk_fixture(tmp_path)
     requests = [query_request(tmp_path, library) for library in ("first", "second", "third")]
     expected = [[compact(row) for row in search._engine(request)] for request in requests]
+    first_events = events(trace)
     trace.unlink()
     response = search._engine_batch(requests)
     assert [item["results"] for item in response] == expected
     assert [item["library_key"] for item in response] == [item["library_key"] for item in requests]
     recorded = events(trace)
     assert len({item["pid"] for item in recorded}) == 1
-    assert sum(item["event"] == "import" for item in recorded) == 1
+    assert sum(item["event"] == "import" for item in first_events) == 1
+    assert not any(item["event"] == "import" for item in recorded)
+    assert {item["pid"] for item in first_events} == {item["pid"] for item in recorded}
     assert sum(item["event"] == "open" for item in recorded) == 3
     assert sum(item["event"] == "close" for item in recorded) == 3
-    assert all(set(row) == {"filepath", "score", "source", "chunkPos"} for item in response for row in item["results"])
-    # Single-operation compatibility still includes the SDK's complete row.
-    assert "body" in search._engine(requests[0])[0]
+    assert all(set(row) == {"filepath", "score", "source"} for item in response for row in item["results"])
+    assert "body" not in search._engine(requests[0])[0]
+    assert all(item["match"] == '"hmax"' for item in recorded if item["event"] == "keyword")
 
 
 def test_mid_batch_library_failure_closes_opened_stores_and_fails_entire_query(tmp_path):
@@ -174,7 +189,9 @@ def search_fixture(tmp_path):
             item = obj(library + "-" + branch, library, "Saved hmax keyword text")
             item["data"]["feature_branch"] = branch
             objects.append(item)
-    search.build(objects, modes=["native"], generation="batch-fixture")
+    # The metadata is real SQLite; only QMD transport uses this fixture SDK.
+    from test_library_search import FakeEngineSearch
+    built = FakeEngineSearch(search.data_dir).build(objects, modes=["qmd_keyword"], generation="batch-fixture")
     manifest = search._load_active()
     # Deliberately construct the supported historical keyword layout. New
     # constructors publish shared collections; this fixture covers old indexes.
@@ -184,7 +201,7 @@ def search_fixture(tmp_path):
         item['db_path'] = str(Path(manifest['directory']) / item['key'] / 'qmd-keyword.sqlite3')
         database = Path(item["db_path"])
         database.parent.mkdir(parents=True, exist_ok=True)
-        rows = [{"filepath": "qmd://objects/" + native_index.qmd_path(obj).split("/", 1)[1], "score": .8,
+        rows = [{"filepath": "qmd://objects/" + object_index.qmd_path(obj).split("/", 1)[1], "score": .8,
                  "source": "fts", "body": "large SDK body", "title": obj["title"]}
                 for obj in objects if obj["library_id"] == library]
         database.write_text(json.dumps({"hits": rows}), encoding="utf-8")
@@ -194,39 +211,40 @@ def search_fixture(tmp_path):
 
 
 @pytest.mark.parametrize("requested", [None, ["second"]])
-def test_public_search_spawns_one_batch_even_for_one_library_and_keeps_stable_ranking(tmp_path, monkeypatch, requested):
+def test_public_search_sends_one_batch_even_for_one_library_and_keeps_stable_ranking(tmp_path, monkeypatch, requested):
     search, trace, objects = search_fixture(tmp_path)
     calls = []
-    original = module.run_text
-    def observe(*args, **kwargs):
-        calls.append((json.loads(kwargs["input_text"]), kwargs["timeout"]))
-        return original(*args, **kwargs)
-    monkeypatch.setattr(module, "run_text", observe)
+    original = QmdWorker.request
+    def observe(worker, payload, **kwargs):
+        calls.append((payload, kwargs["timeout"]))
+        return original(worker, payload, **kwargs)
+    monkeypatch.setattr(QmdWorker, "request", observe)
     hits = search.search("hmax", mode="qmd_keyword", library_ids=requested, limit=4)
     assert len(calls) == 1 and calls[0][0]["op"] == "batch" and calls[0][1] == 180
     assert [item["library_key"] for item in calls[0][0]["requests"]] == (requested or ["first", "second"])
     selected = [item for item in objects if requested is None or item["library_id"] in requested]
-    expected = sorted(selected, key=lambda item: 0 if item["data"]["feature_branch"] == "geometry" else 1)
+    expected = selected
     assert [item["id"] for item in hits] == [item["id"] for item in expected]
-    assert [item["retrieval"]["score"] for item in hits] == [2 / (61 + (index // len(requested or ["first", "second"]))) for index in range(len(hits))]
+    assert [item["retrieval"]["score"] for item in hits] == [.8] * len(hits)
+    assert all('queries' not in item and item['query'] == 'hmax' for item in calls[0][0]['requests'])
     assert len({item["pid"] for item in events(trace)}) == 1
 
 
 def test_scoped_batch_keeps_independent_allowed_paths_before_candidate_limit(tmp_path, monkeypatch):
     search, _, objects = search_fixture(tmp_path)
     calls = []
-    original = module.run_text
-    def observe(*args, **kwargs):
-        calls.append(json.loads(kwargs["input_text"]))
-        return original(*args, **kwargs)
-    monkeypatch.setattr(module, "run_text", observe)
+    original = QmdWorker.request
+    def observe(worker, payload, **kwargs):
+        calls.append(payload)
+        return original(worker, payload, **kwargs)
+    monkeypatch.setattr(QmdWorker, "request", observe)
     hits = search.search("hmax", mode="qmd_keyword", feature_branch="mesh", limit=1)
     assert len(calls) == 1
     requests = calls[0]["requests"]
     assert len(requests) == 2
     for request in requests:
         eligible = next(obj for obj in objects if obj["library_id"] == request["library_key"] and obj["data"]["feature_branch"] == "mesh")
-        assert request["allowed_paths"] == [native_index.qmd_path(eligible).split("/", 1)[1]]
+        assert request["allowed_paths"] == [object_index.qmd_path(eligible).split("/", 1)[1]]
     assert hits[0]["data"]["feature_branch"] == "mesh"
 
 

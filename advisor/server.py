@@ -163,13 +163,13 @@ def handler_for(app: App):
                 self.local_request()
                 self.route(method)
             except (ConflictError, LibraryLifecycleConflict) as exc:
-                self.respond({"error": str(exc)}, 409)
+                self.respond(exc.to_dict() if callable(getattr(exc, 'to_dict', None)) else {"error": str(exc)}, 409)
             except PermissionError as exc:
-                self.respond({"error": str(exc)}, 403)
+                self.respond(exc.to_dict() if callable(getattr(exc, 'to_dict', None)) else {"error": str(exc)}, 403)
             except FileNotFoundError as exc:
                 self.respond({"error": str(exc)}, 404)
             except (ValueError, UnicodeError) as exc:
-                self.respond({"error": str(exc)}, 422)
+                self.respond(exc.to_dict() if callable(getattr(exc, 'to_dict', None)) else {"error": str(exc)}, 422)
             except RuntimeError as exc:
                 self.respond({"error": str(exc)}, 502)
             except (BrokenPipeError, ConnectionResetError):
@@ -208,7 +208,9 @@ def handler_for(app: App):
                         raise ValueError("model_path must be a local GGUF path string")
                     return self.respond(app.libraries.configure_embedding(enabled=body.get("enabled"), model_path=body.get("model_path")))
             if method == "GET" and path == "/api/tools":
-                return self.respond({"api_version": "planning-tools/v1", "tools": tool_definitions()+external_tool_definitions()})
+                bound = query.get("bound", ["false"])[0] == "true"
+                definitions = tool_definitions(bound=True, include_alias=True) if bound else tool_definitions() + external_tool_definitions()
+                return self.respond({"api_version": "planning-tools/v1", "bound": bound, "tools": definitions})
             if method == "POST" and path == "/api/tools/call":
                 body = self.json_body()
                 name=body.get("name")
@@ -226,6 +228,9 @@ def handler_for(app: App):
                     filters["mode"] = query["mode"][0]
                 if "feature_branch" in query:
                     filters["feature_branch"] = query["feature_branch"][0]
+                for name in ("case_id", "stage"):
+                    if name in query:
+                        filters[name] = query[name][0]
                 return self.respond({"results": [candidate_view(item) for item in app.kb.search(text, limit=max(1, min(int(query.get("limit", ["8"])[0]), 30)), kind=query.get("kind", ["all"])[0], filters=filters)]})
             if method == "GET" and path == "/api/libraries":
                 libraries = app.libraries.libraries(include_deleted=True) if query.get("include_deleted", [""])[0] == "1" else app.libraries.libraries()
@@ -294,7 +299,7 @@ def handler_for(app: App):
                 if action == "rebind":
                     return self.respond(app.libraries.rebind(library_id, body.get("root_id", "main"), body["path"]))
                 return self.respond(app.libraries.start_build(library_id, paths=body.get("model_paths"), limit=body.get("limit"),
-                    deep=body.get("deep", True), enrich=body.get("enrich", False), modes=body.get("modes", ["native"]),
+                    deep=body.get("deep", True), enrich=body.get("enrich", False), modes=body.get("modes", ["qmd_keyword"]),
                     model_format=body.get("model_format", "compact")), 202)
             match = re.fullmatch(r"/api/library-jobs/([a-f0-9]{32})", path)
             if method == "GET" and match:
@@ -439,7 +444,7 @@ def handler_for(app: App):
                     return self.respond(app.kb.build())
                 finally:
                     app.index_lock.release()
-            if method == "GET" and path in {"/", "/index.html", "/app.js", "/styles.css", "/library-panel.js", "/library-panel.css", "/workflow.css", "/agent-panel.js", "/agent-panel.css"}:
+            if method == "GET" and path in {"/", "/index.html", "/app.js", "/styles.css", "/library-panel.js", "/library-panel.css", "/workflow.css", "/agent-panel.js", "/agent-panel.css", "/case-guide.js", "/case-guide.css"}:
                 target = config.ROOT / "web" / ("index.html" if path == "/" else path[1:])
                 return self.respond(target.read_bytes(), content_type=(mimetypes.guess_type(target.name)[0] or "application/octet-stream") + "; charset=utf-8")
             raise FileNotFoundError("接口或文件不存在。")
@@ -447,4 +452,34 @@ def handler_for(app: App):
 
 
 def make_server(app: App, port=8765):
-    return ThreadingHTTPServer(("127.0.0.1", port), handler_for(app))
+    from .qmd_worker import start_workbench_workers, stop_workbench_workers
+    search_root = getattr(getattr(app, "libraries", None), "root", None)
+    search_root = Path(search_root) / "search" if search_root is not None else None
+
+    class WorkbenchHTTPServer(ThreadingHTTPServer):
+        def __init__(self):
+            self._qmd_stop = threading.Event()
+            self._qmd_registered = False
+            super().__init__(("127.0.0.1", port), handler_for(app))
+            if search_root is not None:
+                self._qmd_epoch = start_workbench_workers(search_root)
+                self._qmd_registered = True
+                threading.Thread(target=self._warmup_qmd, name="qmd-startup", daemon=True).start()
+
+        def _warmup_qmd(self):
+            from .library_search import LibrarySearch
+            try:
+                # Optional and local: only import the SDK. Startup never waits
+                # for model checks, index reads, downloads or embeddings.
+                LibrarySearch(search_root).warmup_worker(stop_event=self._qmd_stop, startup_epoch=self._qmd_epoch)
+            except Exception:
+                pass  # A query can retry; QMD is not a startup requirement.
+
+        def server_close(self):
+            self._qmd_stop.set()
+            if self._qmd_registered:
+                self._qmd_registered = False
+                stop_workbench_workers(search_root)
+            super().server_close()
+
+    return WorkbenchHTTPServer()

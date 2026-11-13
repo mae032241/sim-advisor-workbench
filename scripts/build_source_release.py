@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -14,6 +15,9 @@ ROOT_FILES = {'.gitattributes', '.gitignore', 'README.md', 'CONTRACT.md',
               'agent_cli.py', 'agent_tools.py', 'external_agent_client.py',
               'library_cli.py', 'tools_cli.py', 'workbench_mcp.py'}
 SOURCE_DIRECTORIES = {'advisor', 'web', 'scripts', 'tests', 'integrations', 'prompts', 'docs'}
+SOURCE_SUFFIXES = {'.py', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.css', '.html',
+                   '.md', '.json', '.toml', '.yaml', '.yml', '.ps1', '.txt', '.java',
+                   '.cmd', '.bat', '.svg'}
 EXCLUDED_PREFIXES = ('benchmarks/', 'docs/evaluation-sets/', 'scripts/source_release_docs/')
 EXCLUDED_FILES = {
     'scripts/geometry_challenge/scenario.json', 'scripts/geometry_challenge/scenario-02.json',
@@ -21,6 +25,8 @@ EXCLUDED_FILES = {
     'scripts/select_library_pilot.py', 'scripts/run_library_pilot.py',
     'scripts/verify_library_pilot.py', 'scripts/compare_native_qmd.py',
     'scripts/evaluate_retrieval.py', 'tests/test_library_pilot.py', 'tests/test_library_report.py',
+    'scripts/replay_case09_retrieval.py', 'scripts/benchmark_product_replay.py',
+    'scripts/benchmark_product_report.py',
 }
 FORBIDDEN_PARTS = {'.git', '.tools', '.venv', 'venv', '.model-env', '.retrieval-env',
                    'data', 'dist', '__pycache__', '.pytest_cache', 'cache', 'models', 'sessions'}
@@ -35,8 +41,26 @@ def allowed(name):
             and (name in ROOT_FILES or path.parts[0] in SOURCE_DIRECTORIES)
             and not name.startswith(EXCLUDED_PREFIXES) and name not in EXCLUDED_FILES
             and not FORBIDDEN_PARTS.intersection(path.parts)
+            and not any(p.startswith('.') for p in path.parts if p not in ROOT_FILES)
             and not any(p.startswith('.test-') for p in path.parts)
             and path.suffix.lower() not in FORBIDDEN_SUFFIXES)
+
+
+def source_candidates(root):
+    """Find new source modules without walking corpora, runtimes or experiments."""
+    result = [name for name in ROOT_FILES if (root / name).is_file()]
+    for base in sorted(SOURCE_DIRECTORIES):
+        for directory, dirs, files in os.walk(root / base, followlinks=False):
+            dirs[:] = [name for name in dirs if not (
+                name.startswith('.') or name in FORBIDDEN_PARTS or name == 'node_modules'
+                or name == 'source_release_docs' or '-test-' in name
+                or name.startswith(('tmp', 'pytest', 'service-test', 'host-test', 'offline-test'))
+            ) and not (Path(directory) / name).is_symlink()]
+            for name in files:
+                path = Path(directory) / name
+                if path.suffix.lower() in SOURCE_SUFFIXES:
+                    result.append(path.relative_to(root).as_posix())
+    return result
 
 
 def collect(root=APP, *, tracked=None):
@@ -44,8 +68,7 @@ def collect(root=APP, *, tracked=None):
     if tracked is None:
         result = subprocess.run(['git', 'ls-files', '-z'], cwd=root, check=True, capture_output=True)
         tracked = result.stdout.decode('utf-8').split('\0')
-        # These are publication tooling, included before their first local commit.
-        tracked += ['scripts/build_source_release.py', 'tests/test_source_release.py']
+        tracked += source_candidates(root)
     files = {}
     excluded = []
     for name in sorted(set(tracked)):

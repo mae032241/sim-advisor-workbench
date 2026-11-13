@@ -32,6 +32,13 @@ QUESTION_SCHEMA = _object({
     "options": {"type": "array", "items": _object({"value": STR, "label": STR})},
     "required": {"type": "boolean"}, "reason": STR,
 })
+QUESTION_SCHEMA["properties"]["id"] = dict(ID_SCHEMA, description="输入小写稳定ID；新增问题的最终ID由服务根据label生成，已有问题身份不可重定义。")
+QUESTION_SCHEMA["properties"]["label"] = {"type": "string", "minLength": 1, "maxLength": 600, "pattern": r"\S"}
+QUESTION_SCHEMA["properties"]["reason"] = {"type": "string", "minLength": 1, "maxLength": 1800, "pattern": r"\S"}
+QUESTION_SCHEMA["properties"]["options"]["maxItems"] = 8
+QUESTION_SCHEMA["properties"]["options"]["description"] = "kind=text时为空数组；kind=select时2至8项，value不得重复。"
+QUESTION_SCHEMA["properties"]["options"]["items"]["properties"]["value"] = {
+    "type": "string", "pattern": r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,63}$", "maxLength": 64}
 SIMPLIFICATION_SCHEMA = _object({
     "objective": STR, "protected_features": STRINGS,
     "candidates": {"type": "array", "maxItems": 8, "items": _object({
@@ -39,13 +46,16 @@ SIMPLIFICATION_SCHEMA = _object({
         "expected_benefit": STR, "lost_effects": STRINGS,
         "geometry_evidence": {**STRINGS, "description": "至少一条非空文本，说明几何依据或尚未检查/定位的限制；未知时明确写待检查范围。自由文字是候选解释，不能自证已观测几何；不可用空数组或纯空白占位。"},
         "geometry_fact_refs": STRINGS, "target_scope": {"type": "string", "enum": ["global", "body", "local_feature"]},
-        "source_ids": {**STRINGS, "description": "仅引用实际读取的来源ID；status=conditional时必须至少一个，其他状态可空。缺方法依据时保留待检查状态，不得虚构来源。"},
+        "source_ids": {**STRINGS, "description": "仅引用实际读取的来源ID；几何检查后仍为conditional时必须至少一个。几何支持不足会先降为needs_inspection，此时可空；缺方法依据保留待检查，不得虚构来源。"},
         "verification": {**STRINGS, "description": "至少一条非空的待执行验证方法，例如对照目标量、守恒或简化前后差异；不是已通过验证的结论，不可用空数组或纯空白占位。"},
         "status": {"type": "string", "enum": ["conditional", "needs_inspection", "keep"]},
         "requires_confirmation": {"type": "boolean"},
     })},
     "unresolved_geometry": STRINGS,
 })
+SIMPLIFICATION_SCHEMA["properties"]["candidates"]["items"]["properties"]["status"]["description"] = (
+    "conditional须有已读方法来源及当前快照中与范围匹配的已观察body数据；几何支持不足时自动降为needs_inspection。"
+    "needs_inspection是待检查建议，不要求文档引用，但仍须说明依据/未知限制和验证计划；keep为保留。")
 DESIGN_BRIEF_SCHEMA = _object({
     "objective": STR,
     "domain_strategy": STR,
@@ -63,32 +73,18 @@ DESIGN_BRIEF_SCHEMA = _object({
     })},
     "simplification": SIMPLIFICATION_SCHEMA,
 })
+DESIGN_BRIEF_SCHEMA["properties"]["candidate_routes"].update(minItems=1, maxItems=6)
+for _field in ("objective", "domain_strategy"):
+    DESIGN_BRIEF_SCHEMA["properties"][_field] = {"type": "string", "minLength": 1, "pattern": r"\S"}
 
 
 def _check_shape(value, schema, where="result"):
-    """Small strict validator for our schemas, including injected-runner tests."""
-    expected = schema.get("type")
-    if expected == "object":
-        if not isinstance(value, dict):
-            raise ValueError(f"{where} 字段不符合研究结果约定。期望 JSON 对象。")
-        if set(value) != set(schema["properties"]):
-            missing = sorted(set(schema["properties"]) - set(value))
-            unexpected = sorted(str(name) for name in set(value) - set(schema["properties"]))
-            raise ValueError(f"{where} 字段不符合研究结果约定。missing={missing}; unexpected={unexpected}。")
-        for name, child in schema["properties"].items():
-            _check_shape(value[name], child, where + "." + name)
-    elif expected == "array":
-        if not isinstance(value, list) or len(value) > schema.get("maxItems", 200):
-            raise ValueError(f"{where} 列表格式或数量不符合限制。")
-        for index, child in enumerate(value):
-            _check_shape(child, schema["items"], where + f"[{index}]")
-    elif expected == "string":
-        if not isinstance(value, str) or len(value) > 30000:
-            raise ValueError(f"{where} 必须是有界文本。")
-        if "enum" in schema and value not in schema["enum"]:
-            raise ValueError(f"{where} 的取值无效。")
-    elif expected == "boolean" and not isinstance(value, bool):
-        raise ValueError(f"{where} 必须是布尔值。")
+    """Use the same shape validator as public and bound planning tools."""
+    import json
+    from .plan_drafts import schema_errors
+    errors = schema_errors(value, schema)
+    if errors:
+        raise ValueError(where + " 字段不符合schema：" + json.dumps(errors, ensure_ascii=False))
 
 
 def _label_key(label):
@@ -264,8 +260,6 @@ def validate_response(response, pool, context=None):
         if not any(item.strip() for item in candidate["verification"]) or not any(item.strip() for item in candidate["geometry_evidence"]):
             empty_fields = [where + "." + key for key in ("geometry_evidence", "verification") if not any(item.strip() for item in candidate[key])]
             raise ValueError("简化候选需要几何事实/限制和待执行验证方法。以下字段至少需要一条非空文本：" + ", ".join(empty_fields) + "。")
-        if candidate["status"] == "conditional" and not candidate["source_ids"]:
-            raise ValueError(f"有条件采用的简化策略必须有已读来源支持。{where}.source_ids 在 status=conditional 时须至少包含一个实际已读来源ID；缺依据时保持待检查，不得虚构引用。")
         refs = list(dict.fromkeys(candidate["geometry_fact_refs"]))
         if not set(refs) <= set(catalog):
             raise ValueError("简化候选引用了当前快照白名单之外的几何事实/实体 ID。")
@@ -284,6 +278,8 @@ def validate_response(response, pool, context=None):
             limitation = f"候选 {candidate['id']} 尚无与作用范围匹配的已观察几何数据；需检查定位/局部测量后再判断适用性。"
             if limitation not in simplification["unresolved_geometry"]:
                 simplification["unresolved_geometry"].append(limitation)
+        if candidate["status"] == "conditional" and not candidate["source_ids"]:
+            raise ValueError(f"有条件采用的简化策略必须有已读来源支持。{where}.source_ids 在 status=conditional 时须至少包含一个实际已读来源ID；缺依据时保持needs_inspection，不得虚构引用。")
         prefix = "候选解释（非观察数据）："
         candidate["geometry_evidence"] = [text if text.startswith(prefix) else prefix + text for text in candidate["geometry_evidence"]]
         citations.extend(candidate["source_ids"])

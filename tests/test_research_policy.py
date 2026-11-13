@@ -1,7 +1,10 @@
+import pytest
+
 from advisor import agent_sessions
 from advisor.planning_service import tool_definitions
 from advisor.research_policy import (COMMON_PLANNING_POLICY, COMMON_POLICY_MARKER,
-    RESEARCH_POLICY, RESEARCH_POLICY_MARKER, SEARCH_KNOWLEDGE_DESCRIPTION, READ_SOURCE_DESCRIPTION)
+    RESEARCH_POLICY, RESEARCH_POLICY_MARKER, SEARCH_KNOWLEDGE_DESCRIPTION,
+    READ_SOURCE_DESCRIPTION, load_planner_instructions)
 from scripts import benchmark_cli, benchmark_codex_cli, benchmark_no_library_cli
 
 
@@ -18,6 +21,45 @@ def test_product_and_benchmark_transports_share_exact_task_independent_policies(
     assert "search_knowledge" not in benchmark_no_library_cli.INSTRUCTIONS
     assert "read_source" not in benchmark_no_library_cli.INSTRUCTIONS
     assert "通常约 3 次" not in benchmark_codex_cli.INSTRUCTIONS
+
+
+def test_template_renders_shared_policy_without_changing_surrounding_instructions(tmp_path):
+    template = tmp_path / "planner.txt"
+    template.write_text("任务边界 {literal}\n" + COMMON_POLICY_MARKER + "\n研究\n" +
+                        RESEARCH_POLICY_MARKER + "\n结束", encoding="utf-8")
+    assert load_planner_instructions(template) == (
+        "任务边界 {literal}\n" + COMMON_PLANNING_POLICY + "\n研究\n" + RESEARCH_POLICY + "\n结束")
+
+
+@pytest.mark.parametrize("marker", [COMMON_POLICY_MARKER, RESEARCH_POLICY_MARKER])
+@pytest.mark.parametrize("occurrences", [0, 2])
+def test_template_rejects_missing_or_duplicate_shared_policy(tmp_path, marker, occurrences):
+    other = RESEARCH_POLICY_MARKER if marker == COMMON_POLICY_MARKER else COMMON_POLICY_MARKER
+    template = tmp_path / "planner.txt"
+    template.write_text("\n".join([other] + [marker] * occurrences), encoding="utf-8")
+    with pytest.raises(ValueError, match="each shared policy marker exactly once"):
+        load_planner_instructions(template)
+
+
+def test_staged_policy_fields_and_discovery_tool_are_exposed_by_product_contract():
+    tools = {tool["name"]: tool for tool in tool_definitions()}
+    guidance = tools["get_mechanism_checks"]["inputSchema"]
+    assert guidance["required"] == []  # Discovery does not need a plan or selected profile.
+    assert guidance["properties"]["mechanisms"]["items"]["type"] == "string"
+    for name in ("get_mechanism_checks", "save_plan_settings", "get_plan_settings", "review_plan"):
+        assert name in COMMON_PLANNING_POLICY
+        assert name in tools
+    assert all(field in COMMON_PLANNING_POLICY for field in ("check_ids", "implementation", "step_ids",
+                                                            "proposed_value"))
+    for name, field in (("save_plan_settings", "settings"), ("save_plan", "plan_settings"),
+                        ("review_plan", "plan_settings")):
+        row = tools[name]["inputSchema"]["properties"][field]["items"]
+        assert {"check_ids", "implementation"}.isdisjoint(row["required"])
+        assert row["properties"]["check_ids"]["items"]["type"] == "string"
+        binding = row["properties"]["implementation"]
+        assert set(binding["properties"]) == {"step_id", "field"}
+        assert set(binding["required"]) == {"step_id", "field"}
+        assert set(binding["properties"]["field"]["enum"]) == {"action", "inputs", "checks"}
 
 
 def test_product_and_benchmark_tools_explain_source_context_and_navigation():

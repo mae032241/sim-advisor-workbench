@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from advisor.library_search import BRIDGE_VERSION, FILTER_ADAPTER_VERSION, LibrarySearch, _representation
+from advisor.library_search import BRIDGE_VERSION, FILTER_ADAPTER_VERSION, KEYWORD_ADAPTER_VERSION, LibrarySearch, _representation
 from test_library_search import FakeEngineSearch, obj
 
 
@@ -22,12 +22,12 @@ def feature(key, branch, *, kind="code", library="cases", legacy=False, text="me
     return item
 
 
-def test_native_filters_branch_and_kind_before_limit_not_after_global_ranking(tmp_path):
+def test_keyword_filters_branch_and_kind_before_limit_not_after_global_ranking(tmp_path):
     physics = [feature(f"physics-{i}", "physics", text="mesh sizing " * 12) for i in range(220)]
     mesh_code = feature("mesh-code", "mesh", text="mesh sizing " * 8)
     mesh_case = feature("mesh-case", "mesh", kind="case", text="mesh sizing controls tetrahedral elements")
     search = LibrarySearch(tmp_path)
-    search.build(physics + [mesh_code, mesh_case], modes=["native"], generation="branch-native")
+    search.build(physics + [mesh_code, mesh_case], modes=["qmd_keyword"], generation="branch-keyword")
     assert search.search("mesh sizing", limit=1)[0]["id"] != mesh_case["id"]
     hits = search.search("mesh sizing", kind="case", feature_branch="mesh", limit=1)
     assert [hit["id"] for hit in hits] == [mesh_case["id"]]
@@ -40,14 +40,14 @@ class ScopedEngineSpy(FakeEngineSearch):
         return super()._engine(request, timeout=timeout)
 
 
-@pytest.mark.parametrize("mode", ["native", "qmd_keyword", "qmd_vector"])
+@pytest.mark.parametrize("mode", ["qmd_keyword", "qmd_vector"])
 def test_legacy_scope_and_absolute_active_work_across_libraries_without_build(tmp_path, mode):
     search = ScopedEngineSpy(tmp_path)
     objects = [feature(f"noise-{i}", "physics", library="large") for i in range(120)]
     target = feature("mesh-target", "mesh", library="small", legacy=True)
     geom = feature("geom-target", "geom", library="small", legacy=True)
     solver = feature("solver-target", "sol", library="small", legacy=True)
-    built = search.build(objects + [target, geom, solver], modes=["native", "qmd_keyword", "qmd_vector"], generation="legacy")
+    built = search.build(objects + [target, geom, solver], modes=["qmd_keyword", "qmd_vector"], generation="legacy")
     # The historical manifest had absolute paths and no path_schema; the object
     # payloads already contain scope_hint, not the new feature metadata.
     search.active_path.write_text(json.dumps(built), encoding="utf-8")
@@ -59,7 +59,8 @@ def test_legacy_scope_and_absolute_active_work_across_libraries_without_build(tm
     if mode == 'qmd_keyword':
         assert all(call['op'] == 'shared_keyword' for call in search.calls)
         assert all(len(call['collections']) == 1 and call['collections'][0]['library_key'] == 'small'
-                   and len(call['collections'][0]['allowed_paths']) == 1 for call in search.calls)
+                   and 'allowed_paths' not in call['collections'][0]
+                   and call['authoritative_scope']['kind'] == 'code' for call in search.calls)
     else:
         assert all(call["op"] == "vector" for call in search.calls)
         assert all(call["corpus"] == built["libraries"]["small"]["corpus"] for call in search.calls)
@@ -120,7 +121,7 @@ def test_actual_qmd_283_shared_keyword_scope_filters_before_topk_without_fts_cop
     search = LibrarySearch(tmp_path / "search", qmd_dir=wrapper, node=probe.node, cache_dir=tmp_path / "cache")
     objects = [feature(f"strong-{i}", "physics", text="mesh sizing " * 12) for i in range(180)]
     target = feature("weak-mesh", "mesh", text="mesh sizing", legacy=True)
-    built = search.build(objects + [target], modes=["native", "qmd_keyword"], generation="real-keyword")
+    built = search.build(objects + [target], modes=["qmd_keyword"], generation="real-keyword")
     assert built["modes"]["qmd_keyword"]["ready"], built["modes"]["qmd_keyword"]
     guard.touch()
     db_path = built["libraries"]["cases"]["db_path"]
@@ -134,7 +135,7 @@ def test_actual_qmd_283_shared_keyword_scope_filters_before_topk_without_fts_cop
     assert search.search("mesh sizing", mode="qmd_keyword", limit=1)[0]["id"] != target["id"]
     hits = search.search("mesh sizing", mode="qmd_keyword", feature_branch="mesh", kind="code", limit=1)
     assert [hit["id"] for hit in hits] == [target["id"]]
-    assert hits[0]["retrieval"]["search_scope"]["adapter"] == 'qmd-2.8.3-shared-scope-v1'
+    assert hits[0]["retrieval"]["search_scope"]["adapter"] == KEYWORD_ADAPTER_VERSION
     assert permanent_snapshot() == before
     # Unknown SDK versions may never silently fall back to unrestricted recall.
     (wrapper / "package.json").write_text('{"type":"module","version":"9.0.0"}', encoding="utf-8")

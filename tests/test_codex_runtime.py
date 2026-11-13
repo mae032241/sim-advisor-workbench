@@ -61,6 +61,10 @@ for line in sys.stdin.buffer:
    note('item/completed',{'turnId':turn_id,'item':{'id':'reason-1','type':'reasoning','text':'HIDDEN REASONING'}})
    note('error',{'turnId':turn_id,'error':{'message':'SECRET ERROR api_key=private'},'willRetry':True})
    write({'method':'item/agentMessage/delta','params':{'threadId':'unrelated','turnId':turn_id,'itemId':'other','delta':'OTHER THREAD SECRET'}})
+  elif text=='retry_then_complete':
+   note('error',{'turnId':turn_id,'error':{'message':'SECRET ERROR Bearer private-value','additionalDetails':'SECRET DETAILS','codexErrorInfo':{'httpConnectionFailed':{'httpStatusCode':503}}},'willRetry':True})
+   completed()
+  elif text=='failed_without_error':completed('failed')
   elif text=='malformed':
    sys.stdout.buffer.write(b'{not-json}\n');sys.stdout.buffer.flush()
   elif text=='overflow':
@@ -287,6 +291,47 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertNotIn("SECRET", str(caught.exception))
         self.assertFalse(runtime.status()["busy"])
         self.assertTrue(runtime.status()["running"])
+
+    def test_retrying_error_completes_same_turn_and_exposes_only_safe_metadata(self):
+        runtime = self.runtime()
+        runtime.start()
+        runtime.send("retry_then_complete")
+        self.wait_for(lambda: not runtime.status()["busy"])
+        state = runtime.status()
+        self.assertTrue(state["turn_outcome_supported"])
+        self.assertEqual(state["last_turn"], {"turn_id": "turn-1", "status": "completed"})
+        self.assertIsNone(state["error_metadata"])
+        error = next(event for event in self.events if event["type"] == "error")
+        self.assertEqual({key: error[key] for key in ("category", "will_retry", "http_status", "fatal")},
+                         {"category": "httpConnectionFailed", "will_retry": True, "http_status": 503, "fatal": False})
+        self.assertNotIn("SECRET", json.dumps(self.events))
+        self.assertNotIn("private-value", json.dumps(self.events))
+        methods = [packet.get("method") for packet in self.packets()]
+        self.assertEqual(methods.count("turn/start"), 1)
+        self.assertNotIn("turn/steer", methods)
+        self.assertNotIn("turn/interrupt", methods)
+
+    def test_failed_outcome_without_error_and_prior_turn_notifications_do_not_pollute_next_turn(self):
+        runtime = self.runtime()
+        runtime.start()
+        runtime.send("failed_without_error")
+        self.wait_for(lambda: not runtime.status()["busy"])
+        self.assertEqual(runtime.status()["last_turn"], {"turn_id": "turn-1", "status": "failed"})
+        runtime.send("next")
+        self.assertIsNone(runtime.status()["last_turn"])
+        self.assertIsNone(runtime.status()["error_metadata"])
+        runtime._notification("error", {"threadId": "mock-thread", "turnId": "turn-1", "error": {}, "willRetry": False})
+        runtime._notification("turn/completed", {"threadId": "mock-thread", "turn": {"id": "turn-1", "status": "failed"}})
+        self.assertTrue(runtime.status()["busy"])
+        self.assertEqual(runtime.status()["turn_id"], "turn-2")
+        self.assertIsNone(runtime.status()["last_turn"])
+        self.assertIsNone(runtime.status()["error_metadata"])
+        # Missing or malformed retryability is unknown, never inferred true.
+        runtime._notification("error", {"threadId": "mock-thread", "turnId": "turn-2",
+                                        "willRetry": "yes", "error": {"codexErrorInfo": "SECRET CATEGORY"}})
+        self.assertEqual(runtime.status()["error_metadata"]["category"], "unknown")
+        self.assertIsNone(runtime.status()["error_metadata"]["will_retry"])
+        self.assertNotIn("SECRET CATEGORY", json.dumps(self.events))
 
     def test_secret_split_across_delta_boundaries_never_streams(self):
         runtime = self.runtime()

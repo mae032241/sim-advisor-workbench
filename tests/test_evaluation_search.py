@@ -11,7 +11,7 @@ import pytest
 from advisor import library_search as module
 from advisor.evaluation_sets import HoldoutPolicy
 from advisor.library_search import LibrarySearch
-from advisor.native_index import qmd_path
+from advisor.object_index import qmd_path
 from test_library_search import FakeEngineSearch, enable_test_embedding, obj
 
 
@@ -27,11 +27,11 @@ def snapshot(paths):
     return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 
 
-def test_opening_and_restoring_web_gate_reuses_existing_native_index(tmp_path, monkeypatch):
+def test_opening_and_restoring_web_gate_reuses_existing_keyword_index(tmp_path, monkeypatch):
     search = LibrarySearch(tmp_path / 'search')
     held = obj('held', text='exclusive holdout needle')
     legal = obj('legal', text='ordinary material reference')
-    search.build([held, legal], modes=['native'], generation='gate-existing')
+    search.build([held, legal], modes=['qmd_keyword'], generation='gate-existing')
     policy = [policy_for([held])]
     monkeypatch.setattr(module, 'exclusion_snapshot', lambda root: policy[0])
     directory = Path(search._load_active(summary=True)['directory'])
@@ -48,7 +48,7 @@ def test_opening_and_restoring_web_gate_reuses_existing_native_index(tmp_path, m
 def test_unfiltered_counts_use_covering_index_and_cached_exclusion_totals(tmp_path, monkeypatch):
     search = LibrarySearch(tmp_path / 'search')
     held, legal = obj('held'), obj('legal')
-    search.build([held, legal], modes=['native'], generation='counts')
+    search.build([held, legal], modes=['qmd_keyword'], generation='counts')
     monkeypatch.setattr(module, 'exclusion_snapshot', lambda root: policy_for([held]))
     connect, statements = sqlite3.connect, []
 
@@ -59,7 +59,7 @@ def test_unfiltered_counts_use_covering_index_and_cached_exclusion_totals(tmp_pa
 
     monkeypatch.setattr(module.sqlite3, 'connect', traced)
     assert [hit['id'] for hit in search.search('valve')] == [legal['id']]
-    count_sql = next(sql for sql in statements if sql.startswith('SELECT library_id,count(*) FROM objects'))
+    count_sql = next(sql for sql in statements if sql == module.query_scope_counts.BASE_SQL)
     with closing(connect((Path(search._load_active(summary=True)['directory']) / 'objects.sqlite3').as_uri() + '?mode=ro', uri=True)) as db:
         plan = ' '.join(str(row) for row in db.execute('EXPLAIN QUERY PLAN ' + count_sql))
     assert 'COVERING INDEX objects_scope' in plan and 'CORRELATED' not in plan
@@ -71,11 +71,11 @@ def test_unfiltered_counts_use_covering_index_and_cached_exclusion_totals(tmp_pa
 
 @pytest.mark.parametrize('path_rule', [False, True])
 @pytest.mark.parametrize('legacy', [False, True])
-def test_native_excludes_strong_hits_before_topk_even_with_explicit_library(tmp_path, monkeypatch, path_rule, legacy):
+def test_keyword_excludes_strong_hits_before_topk_even_with_explicit_library(tmp_path, monkeypatch, path_rule, legacy):
     search = LibrarySearch(tmp_path / 'search')
     held = [obj('strong-' + str(i), text='mesh sizing ' * 12) for i in range(180)]
     target = obj('weak', text='mesh sizing controls tetrahedral elements')
-    built = search.build(held + [target], modes=['native'], generation='existing')
+    built = search.build(held + [target], modes=['qmd_keyword'], generation='existing')
     if legacy:
         # A historical, unchanged generation has source JSON and keeps QMD
         # locators in its manifest rather than the objects table.
@@ -131,7 +131,7 @@ class ExclusionEngine(FakeEngineSearch):
 def test_qmd_orchestration_passes_policy_by_filename_and_rejects_illegal_bridge_hits(tmp_path, monkeypatch, mode):
     search = ExclusionEngine(tmp_path / 'search')
     held, target = obj('held'), obj('target')
-    built = search.build([held, target], modes=['native', 'qmd_keyword', 'qmd_vector'], generation='existing')
+    built = search.build([held, target], modes=['qmd_keyword', 'qmd_vector'], generation='existing')
     before = snapshot([search.active_path, Path(built['directory']) / 'objects.sqlite3'])
     monkeypatch.setattr(module, 'exclusion_snapshot', lambda root: policy_for([held]))
     search.calls.clear()
@@ -149,7 +149,7 @@ def test_qmd_orchestration_passes_policy_by_filename_and_rejects_illegal_bridge_
         return real_engine(request, **kwargs)
 
     monkeypatch.setattr(search, '_engine', forbidden)
-    monkeypatch.setattr(module.native_index, 'hydrate_object', lambda *args, **kwargs: pytest.fail('Excluded payload must not hydrate'))
+    monkeypatch.setattr(module.object_index, 'hydrate_object', lambda *args, **kwargs: pytest.fail('Excluded payload must not hydrate'))
     with pytest.raises(RuntimeError, match='evaluation-excluded'):
         search.search('valve', mode=mode, library_ids=['cases'], limit=1)
     assert snapshot([search.active_path, Path(built['directory']) / 'objects.sqlite3']) == before
@@ -166,7 +166,7 @@ def test_real_shared_keyword_excludes_high_scores_before_topk_without_reindex(tm
     search = supported_qmd(tmp_path)
     held = [obj('strong-' + str(i), text='mesh sizing ' * 12) for i in range(120)]
     target = obj('weak', text='mesh sizing controls tetrahedral elements')
-    built = search.build(held + [target], modes=['native', 'qmd_keyword'], generation='existing')
+    built = search.build(held + [target], modes=['qmd_keyword'], generation='existing')
     assert built['modes']['qmd_keyword']['ready']
     assert search.search('mesh sizing', mode='qmd_keyword', limit=1)[0]['id'] != target['id']
     files = [search.active_path, Path(built['directory']) / 'objects.sqlite3', Path(built['directory']) / 'qmd-keyword.sqlite3']
@@ -213,7 +213,7 @@ def test_real_legacy_keyword_and_vectors_exclude_before_scoring_and_topk(tmp_pat
         s.internal.llm.embed=async()=>({embedding:[1,0]});return s;
       }""".replace('INDEX', json.dumps(index_url))
     (wrapper / 'dist/index.js').write_text(source, encoding='utf-8')
-    (wrapper / 'dist/store.js').write_text('export {getEmbeddingFingerprint,searchFTS} from ' + json.dumps(store_url) + ';', encoding='utf-8')
+    (wrapper / 'dist/store.js').write_text('export {getEmbeddingFingerprint,normalizeCjkForFTS} from ' + json.dumps(store_url) + ';', encoding='utf-8')
     (wrapper / 'dist/llm.js').write_text('export {formatQueryForEmbedding} from ' + json.dumps(llm_url) + ';', encoding='utf-8')
     search = LibrarySearch(tmp_path / 'query', qmd_dir=wrapper, node=probe.node, cache_dir=tmp_path / 'cache')
     collection = qmd_path(obj('held')).split('/')[0]

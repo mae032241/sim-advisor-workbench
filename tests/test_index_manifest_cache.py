@@ -13,13 +13,15 @@ from advisor.build_control import BuildCancelled
 def empty_cache():
     cache._SUMMARIES.clear()
     cache._FULL = None
+    cache._RESOLVED.clear()
     yield
     cache._SUMMARIES.clear()
     cache._FULL = None
+    cache._RESOLVED.clear()
 
 
 def write(path, generation="first"):
-    value = {"generation": generation, "modes": {"native": {"ready": True}},
+    value = {"generation": generation, "modes": {"qmd_keyword": {"ready": True}},
              "libraries": {"one": {"db_path": "generations/first/lib_one/qmd-keyword.sqlite3"}},
              "mapping": {"one/source.md": "citation"},
              "representation": {"objects": {"citation": {"indexed_characters": 100}}}}
@@ -33,9 +35,9 @@ def test_summary_parses_once_keeps_no_bulk_and_returns_independent_metadata(tmp_
     load = Mock(wraps=json.load)
     monkeypatch.setattr(cache.json, "load", load)
     first = cache.read_manifest(path, summary=True)
-    first["modes"]["native"]["ready"] = False
+    first["modes"]["qmd_keyword"]["ready"] = False
     second = cache.read_manifest(path, summary=True)
-    assert second["modes"]["native"]["ready"]
+    assert second["modes"]["qmd_keyword"]["ready"]
     assert "mapping" not in second and "representation" not in second
     assert load.call_count == 1
     assert cache._FULL is None
@@ -49,9 +51,9 @@ def test_full_cache_shares_only_bulk_metadata_and_also_warms_summary(tmp_path, m
     monkeypatch.setattr(cache.json, "load", load)
     first = cache.read_manifest(path)
     first["libraries"]["one"]["db_path"] = "caller runtime locator"
-    first["modes"]["native"]["ready"] = False
+    first["modes"]["qmd_keyword"]["ready"] = False
     second = cache.read_manifest(path)
-    assert second["modes"]["native"]["ready"]
+    assert second["modes"]["qmd_keyword"]["ready"]
     assert second["libraries"]["one"]["db_path"].startswith("generations/")
     assert first["mapping"] is second["mapping"]
     assert first["representation"] is second["representation"]

@@ -8,7 +8,7 @@
 | MCP stdio 桥接 | `python -m pip install -r requirements-mcp.txt` |
 | DSH 插件 | DSH、Node.js 24.9+、Python 3.12+ |
 | STEP/MPH 扩展解析 | 可选 sim-cli/simparse；STEP 内核补充可选 Gmsh |
-| 原生检索 | Python SQLite FTS5 与用户构建的索引 |
+| QMD 关键词检索 | 已配置的 Node、QMD SDK 与用户构建的索引；无需 embedding 权重 |
 | QMD 关键词检索 | 用户提供的 QMD SDK、兼容 Node.js 和对应原生依赖 |
 | QMD 向量检索 | 额外配置本地 embedding 权重并明确启用、构建向量 |
 | 普通 PDF 文本解析 | 可选 pypdf |
@@ -24,7 +24,7 @@
 - `SIM_ADVISOR_DATA`：工作台持久数据目录。
 - `COMSOL_DOC_ROOT`、`COMSOL_APPLICATIONS`：用户提供的文档与案例根目录。
 - `SIM_ADVISOR_SIM_PYTHON`：带有解析扩展的 Python。
-- `SIM_ADVISOR_NODE`、`SIM_ADVISOR_QMD_DIR`：可选 QMD 运行环境。
+- `SIM_ADVISOR_NODE`、`SIM_ADVISOR_QMD_DIR`：QMD 检索运行环境。
 - `SIM_ADVISOR_PAGEINDEX_PYTHON`、`SIM_ADVISOR_PAGEINDEX_MODEL`：可选 PDF 推理配置。
 - `SIM_ADVISOR_COMSOL_HOME`：Deep API 使用的 COMSOL 安装目录。
 
@@ -34,6 +34,6 @@ DSH 插件提供相应设置字段，见 [config.js](../integrations/dsh-sim-wor
 
 ## embedding
 
-embedding 默认关闭。需在资料库管理中提供本地 GGUF 路径并明确保存启用，再选择向量索引模式。普通启动、native 检索和 QMD 关键词检索无需开启 embedding。权重与关键词索引分别管理，关键词可用不能证明向量索引已就绪。
+embedding 默认关闭。需在资料库管理中提供本地 GGUF 路径并明确保存启用，再选择向量索引模式。普通启动和 QMD 关键词检索无需开启 embedding。权重与关键词索引分别管理，关键词可用不能证明向量索引已就绪。
 
 自行分发依赖时，应保留实际组件的原始许可证、通知和适用的源码提供材料。仓库保留的第三方源码清单及许可证见 [vendor/](../integrations/dsh-sim-workbench/vendor/)，不为外置依赖或权重推定统一许可。

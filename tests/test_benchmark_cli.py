@@ -80,6 +80,60 @@ def test_prepare_and_judge_have_separate_visibility(tmp_path):
         cli.prepare(root, "case-01", run)
 
 
+def official_case(root, case_id="case-01"):
+    reference = case(root, case_id)
+    reference.pop("assessment")
+    reference.update(schema="official-route-case-reference/v1", questions=[{
+        "id": "route-01", "category": "官方路线", "question": "是否落实参考路线？",
+        "yes_condition": "明确说明参考方程与边界", "no_condition": "缺失或替代未验证",
+        "evidence": [{"source_id": "source", "locator": "MPH saved node"}],
+        # Selecting another route must not turn this into an optional item.
+        "applicability": {"type": "conditional", "condition": "Only if chosen"},
+    }])
+    core.dump_json(root / "private/cases" / case_id / "reference.json", reference)
+    return reference
+
+
+def test_official_route_packet_uses_new_policy_without_exposing_answers(tmp_path):
+    root = tmp_path / "benchmark"
+    reference = official_case(root)
+    packet = core.judge_packet(root, "case-01", PLAN)
+    assert packet["assessment_scope"] == "official_reference_route"
+    assert packet["instructions"] == core.OFFICIAL_ROUTE_JUDGE_INSTRUCTIONS
+    assert packet["instructions"] != core.JUDGE_INSTRUCTIONS
+    run = tmp_path / "agent-run"
+    cli.prepare(root, "case-01", run)
+    public = (run / "question.json").read_text(encoding="utf-8")
+    assert "PRIVATE_IMPLEMENTATION_CANARY" not in public
+    assert "yes_condition" not in public and "MPH saved node" not in public
+    value = judgement(reference)
+    result = core.assess_judgement(reference, value, PLAN)
+    assert result["scope"] == "official_reference_route_only"
+    assert result["category_counts"]["官方路线"]["pass"] == 1
+
+
+def test_official_route_cannot_skip_an_unchosen_reference_route(tmp_path):
+    reference = official_case(tmp_path)
+    value = judgement(reference)
+    value["check_results"][0].update(verdict="not_applicable", applicability_reason="Alternative used")
+    with pytest.raises(ValueError, match="cannot be skipped"):
+        core.assess_judgement(reference, value, PLAN)
+
+
+def test_v3_validate_uses_selected_manifest_instead_of_legacy_eighteen(tmp_path):
+    official_case(tmp_path, "case-01")
+    official_case(tmp_path, "case-09")
+    core.dump_json(tmp_path / "public/manifest.json", {
+        "schema": "simulation-planning-benchmark/v3", "case_count": 2,
+        "cases": [{"case_id": "case-01"}, {"case_id": "case-09"}],
+    })
+    result = cli.validate(tmp_path)
+    assert result["status"] == "ready" and result["expected"] == 2
+    official_case(tmp_path, "case-18")
+    with pytest.raises(ValueError, match="must match"):
+        cli.validate(tmp_path)
+
+
 def test_assessment_summary_recomputes_verdict_counts(tmp_path, capsys):
     reference = case(tmp_path)
     value = judgement(reference)

@@ -7,7 +7,7 @@ import { WorkbenchBridge, apply, inject } from '../index.js';
 import { parseWorkbenchUrl, requestJSON } from '../http.js';
 
 const SID_A = 'a'.repeat(32), SID_B = 'b'.repeat(32);
-const NAMES = ['get_task_context', 'search_knowledge', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled'];
+const NAMES = ['get_task_context', 'search_knowledge', 'search_cases', 'get_case_guide', 'read_case_configuration', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) {
   for (let i = 0; i < 150; i++) { if (predicate()) return; await sleep(10); }
@@ -78,8 +78,8 @@ async function fixture(t, options = {}) {
     const body = raw ? JSON.parse(raw) : undefined;
     requests.push({ path: request.url, body });
     const send = (value, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
-    if (request.url === '/api/tools') {
-      return send({ tools: NAMES.map(name => ({ name, description: name, inputSchema: { type: 'object',
+    if (request.url === '/api/tools?bound=true') {
+      return send({ ...(options.bound === undefined ? {} : {bound: options.bound}), tools: options.definitions ?? [...NAMES, ...(options.extraTools ?? [])].map(name => ({ name, description: name, inputSchema: { type: 'object',
         properties: { session_id: { type: 'string' }, ...(name === 'get_task_context' ? {} : { revision: { type: 'integer' } }) },
         required: ['session_id'], additionalProperties: false } })) });
     }
@@ -98,6 +98,13 @@ async function fixture(t, options = {}) {
     if (action === 'unregister') { record.unregistered = true; return send({ unregistered: true }); }
     if (action === 'event') { record.events.push(body.event); return send({ accepted: !record.detached }); }
     if (action === 'tool') {
+      if (options.contractFailure) return send({ error: `Invalid arguments ${record.token}`,
+        error_code: 'tool_arguments_invalid', tool: body.name,
+        errors: [{path: '/offset', code: 'minimum', expected: {type: 'integer', minimum: 0, description: 'x'.repeat(2500)}}],
+        next_action: {tool: 'get_tool_contract', arguments: {tool: body.name}} }, 422);
+      if (options.draftFailure) return send({ error: 'Invalid save shape', draft_id: 'c'.repeat(32),
+        draft_revision: 2, errors: [{ path: '/plan/steps/0/location_note', code: 'additionalProperties' }],
+        next_action: { tool: 'repair_plan_draft' } }, 422);
       if (options.failTool) return send({ error: `版本冲突。${record.token}` }, 409);
       if (body.name === 'save_plan' || body.name === 'update_steps') record.saves.push(body);
       return send({ result: { from: sid, name: body.name, arguments: body.arguments, revision: 4 } });
@@ -120,6 +127,97 @@ async function fixture(t, options = {}) {
     command(sid, type, text) { const record = records.get(sid); record.commands.push({ id: ++record.cursor, type, text }); },
   };
 }
+
+test('save validation keeps draft identity and field errors available through the native bridge', async t => {
+  const f = await fixture(t, { draftFailure: true });
+  await f.call(f.agent, 'bind_workbench', { url: f.url(SID_A) });
+  const result = await f.call(f.agent, 'save_plan', { revision: 3 });
+  assert.equal(result.success, false);
+  assert.equal(result.draft_id, 'c'.repeat(32));
+  assert.equal(result.draft_revision, 2);
+  assert.equal(result.errors[0].path, '/plan/steps/0/location_note');
+  assert.equal(result.next_action.tool, 'repair_plan_draft');
+  assert.ok(f.agent.ctx.toolsMap.has('save_plan'));
+});
+
+test('contract errors preserve complete expected fields without a draft ID or private token', async t => {
+  const f = await fixture(t, {contractFailure: true, extraTools: ['get_tool_contract']});
+  await f.call(f.agent, 'bind_workbench', {url: f.url(SID_A)});
+  const result = await f.call(f.agent, 'get_tool_contract', {tool: 'save_plan', offset: -1});
+  assert.equal(result.success, false);
+  assert.equal(result.error_code, 'tool_arguments_invalid');
+  assert.equal(result.tool, 'get_tool_contract');
+  assert.equal(result.errors[0].expected.minimum, 0);
+  assert.equal(result.errors[0].expected.description.length, 2500);
+  assert.equal(result.next_action.tool, 'get_tool_contract');
+  assert.equal(JSON.stringify(result).includes('PRIVATE-BINDING'), false);
+  assert.equal(f.agent.ctx.toolsMap.has('get_tool_contract'), true);
+});
+
+test('available settings, review and draft tools bind and disconnect with their owning agent', async t => {
+  const extraTools = ['save_plan_settings', 'get_plan_settings', 'review_plan', 'get_plan_draft', 'repair_plan_draft', 'get_mechanism_checks'];
+  const f = await fixture(t, { extraTools });
+  await f.call(f.agent, 'bind_workbench', { url: f.url(SID_A) });
+  for (const name of extraTools) {
+    assert.ok(f.agent.ctx.toolsMap.has(name));
+    assert.equal(f.agent.ctx.toolsMap.get(name).parameters.properties.session_id, undefined);
+    await f.call(f.agent, name, { revision: 3 });
+    const sent = f.requests.findLast(r => r.body?.name === name);
+    assert.equal(sent.body.name, name);
+    assert.equal(sent.path, `/api/sessions/${SID_A}/external/tool`);
+  }
+  await f.call(f.agent, 'unbind_workbench', {});
+  for (const name of extraTools) assert.equal(f.agent.ctx.toolsMap.has(name), false);
+});
+
+test('server-owned bound catalog registers contract and future tools with their exact schemas', async t => {
+  const definitions = [
+    {name: 'get_tool_contract', description: 'actual contract guidance', inputSchema: {type: 'object', properties: {
+      tool: {type: 'string'}, path: {type: 'string'}, offset: {type: 'integer', minimum: 0}, length: {type: 'integer', minimum: 1},
+    }, required: ['tool'], additionalProperties: false}},
+    {name: 'future_planning_tool', description: 'server-owned future tool', inputSchema: {type: 'object', properties: {
+      mode: {type: 'string', enum: ['a', 'b']}, nested: {type: 'object', properties: {flag: {type: 'boolean'}}, additionalProperties: false},
+    }, required: ['mode'], additionalProperties: false}},
+  ];
+  const f = await fixture(t, {bound: true, definitions});
+  await f.call(f.agent, 'bind_workbench', {url: f.url(SID_A)});
+  for (const definition of definitions) {
+    const native = f.agent.ctx.toolsMap.get(definition.name);
+    assert.deepEqual(native.parameters, definition.inputSchema);
+    assert.equal(native.description, definition.description);
+  }
+  const args = {tool: 'save_plan', path: '/design_brief/simplification/candidates/0/status', offset: 19, length: 71};
+  const result = await f.call(f.agent, 'get_tool_contract', args);
+  assert.deepEqual(result.arguments, args);
+  const sent = f.requests.findLast(r => r.body?.name === 'get_tool_contract');
+  assert.equal(sent.path, `/api/sessions/${SID_A}/external/tool`);
+  assert.equal(sent.body.arguments.session_id, undefined);
+  assert.equal(sent.body.binding_id, f.records.get(SID_A).token);
+  await f.call(f.agent, 'unbind_workbench');
+  for (const definition of definitions) assert.equal(f.agent.ctx.toolsMap.has(definition.name), false);
+});
+
+test('legacy catalog fallback exposes contract while excluding mailbox and unknown tools', async t => {
+  const f = await fixture(t, {extraTools: ['get_tool_contract', 'register_external_agent', 'future_planning_tool']});
+  await f.call(f.agent, 'bind_workbench', {url: f.url(SID_A)});
+  assert.equal(f.agent.ctx.toolsMap.has('get_tool_contract'), true);
+  assert.equal(f.agent.ctx.toolsMap.has('register_external_agent'), false);
+  assert.equal(f.agent.ctx.toolsMap.has('future_planning_tool'), false);
+});
+
+test('invalid bound catalogs fail before registering an external binding', async t => {
+  for (const definitions of [
+    [{name: 'bad', description: 'bad', inputSchema: {type: 'object', properties: {session_id: {type: 'string'}}}}],
+    [{name: 'bad', description: 'bad', inputSchema: {type: 'object', properties: {binding_id: {type: 'string'}}}}],
+    [{name: 'bad', description: 'bad', inputSchema: {type: 'object', properties: []}}],
+    [1],
+    ['duplicate', 'duplicate'].map(name => ({name, description: name, inputSchema: {type: 'object', properties: {}}})),
+  ]) {
+    const f = await fixture(t, {bound: true, definitions});
+    await assert.rejects(f.call(f.agent, 'bind_workbench', {url: f.url(SID_A)}), /工具目录/);
+    assert.equal(f.requests.some(r => r.path.endsWith('/register')), false);
+  }
+});
 
 test('bundle metadata, locales, exports and original icon form a native Host package', async () => {
   const root = new URL('../', import.meta.url);
@@ -469,10 +567,10 @@ test('unbind during registration revokes a late registration without installing 
 test('unbind during catalog loading prevents remote registration and allows a new binding', async t => {
   let release, held = true;
   const gate = new Promise(resolve => { release = resolve; });
-  const f = await fixture(t, {afterResponse: path => path === '/api/tools' && held ? gate : undefined});
+  const f = await fixture(t, {afterResponse: path => path === '/api/tools?bound=true' && held ? gate : undefined});
   const pending = f.call(f.agent, 'bind_workbench', {url: f.url(SID_A)});
   const rejected = assert.rejects(pending, /取消|断开|退出/);
-  await until(() => f.requests.some(request => request.path === '/api/tools'));
+  await until(() => f.requests.some(request => request.path === '/api/tools?bound=true'));
   assert.equal((await f.call(f.agent, 'unbind_workbench')).unbound, true);
   held = false; release(); await rejected;
   assert.equal(f.records.size, 0);

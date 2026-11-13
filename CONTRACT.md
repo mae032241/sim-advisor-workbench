@@ -64,6 +64,6 @@ HTTP、CLI、MCP、DSH 与托管模型适配器共用独立 `PlanningService`，
 
 ## 本地资料与发布
 
-运行数据由 `SIM_ADVISOR_DATA` 或插件的数据目录设置管理，和源码及安装包分开。默认 native 检索，QMD 关键词可选，embedding 默认关闭并需手动配置。COMSOL Deep API 与可选扩展依赖用户自行提供。
+运行数据由 `SIM_ADVISOR_DATA` 或插件的数据目录设置管理，和源码及安装包分开。默认 QMD 关键词检索，旧 native 选择仅兼容转为 qmd_keyword，embedding 默认关闭并需手动配置。COMSOL Deep API 与可选扩展依赖用户自行提供。
 
 公开源码不包含官方资料、模型、固定测试集、benchmark 资料、索引、凭据、聊天或实验结果。测试输入由用户通过相应 `--selection`、`--scenario` 或 `--root` 参数提供。第三方 vendor 源码和原始许可证单独保留。

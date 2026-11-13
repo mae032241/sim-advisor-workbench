@@ -66,13 +66,15 @@ class ExternalAgentClient:
     callback. The harness must continue dispatching interrupt/disconnect itself.
     The inbox is process-local, not a durable queue; no writes are auto-retried.
     """
-    def __init__(self, session_id, url=None, *, timeout=10, binding_id=None):
-        if not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id):
+    def __init__(self, session_id=None, url=None, *, timeout=10, binding_id=None):
+        if session_id is not None and (not isinstance(session_id, str) or not re.fullmatch(r"[a-f0-9]{32}", session_id)):
             raise ValueError("session_id 必须为32位十六进制方案 ID。")
         if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 300:
             raise ValueError("timeout 必须为 0–300 秒之间的正数。")
         if binding_id is not None and (not isinstance(binding_id, str) or not binding_id):
             raise ValueError("binding_id 必须为非空字符串。")
+        if binding_id is not None and session_id is None:
+            raise ValueError("使用 binding_id 时需提供 session_id。")
         self.session_id, self.url, self.timeout = session_id, resolve_workbench_url(url), timeout
         self.binding_id, self.instructions, self.registration = binding_id, "", None
         self.cursor, self.connected, self.last_error = 0, False, None
@@ -125,6 +127,8 @@ class ExternalAgentClient:
         return self._request("POST", f"/api/sessions/{self.session_id}/external/{action}", dict(body, binding_id=binding), timeout=min(self.timeout, 10))
 
     def register(self, name, *, backend=None, model=None, reasoning_effort=None, conversation_id=None):
+        if self.session_id is None:
+            raise ValueError("注册外部 Agent 前需提供 session_id；公共工具查询无需注册。")
         if self.binding_id:
             raise RuntimeError("客户端已有 binding；请先 unregister。")
         body = {"name": name, "pid": os.getpid()}
@@ -161,14 +165,22 @@ class ExternalAgentClient:
         return self._bound_request("event", event=event)
 
     def list_tools(self):
-        """Discover the same backend-independent public tools as the MCP bridge."""
+        """Discover the current public tools, including get_tool_contract.
+
+        The workbench owns definitions; no transport-specific tool allowlist or
+        duplicate schema is maintained here.
+        """
         value = self._request("GET", "/api/tools")
         if not isinstance(value.get("tools"), list):
             raise ExternalAgentError({"error": "公共工具响应缺少 tools 数组。"})
         return value["tools"]
 
     def call_tool(self, name, arguments, *, timeout=None):
-        """Pass arguments unchanged: include session_id explicitly when needed."""
+        """Pass arguments unchanged: include session_id explicitly when needed.
+
+        get_tool_contract accepts tool/path/offset/length without registration
+        or a session_id; path points into input data, not schema properties.
+        """
         value = self._request("POST", "/api/tools/call", {"name": name, "arguments": arguments}, timeout=timeout)
         if not isinstance(value.get("result"), dict):
             raise ExternalAgentError({"error": "公共工具响应缺少 result 对象。"})

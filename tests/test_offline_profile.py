@@ -85,13 +85,13 @@ def test_explicit_other_data_never_borrows_a_default_or_environment_data_profile
     assert resolved['sources']['qmd_dir'] == 'default'
 
 
-def test_legacy_keyword_adapter_consumes_the_same_associated_profile(tmp_path):
+def test_qmd_compatibility_facade_consumes_the_same_associated_profile(tmp_path):
     data, _, node, qmd, model = profile_fixture(tmp_path)
     assert qmd_command(data) == [str(node.resolve()), str(qmd / 'dist/cli/qmd.js')]
     adapter = QMDAdapter(data)
     assert adapter.command == qmd_command(data)
-    assert adapter._env()['QMD_EMBED_MODEL'] == str(model.resolve())
-    assert adapter._env()['QMD_LLAMA_GPU'] == 'false'
+    assert adapter.dependencies['model_uri'] == str(model.resolve())
+    assert adapter.data_dir == data.resolve()
 
 
 def test_native_file_uri_is_normalized_and_model_receipts_are_per_file(tmp_path, monkeypatch):
@@ -168,7 +168,7 @@ def test_cli_runtime_uses_explicit_library_root_and_does_not_create_catalog(tmp_
     assert not library.exists()
 
 
-def test_cli_index_default_is_native_keyword_and_requested_mode_failure_is_nonzero(tmp_path, monkeypatch, capsys):
+def test_cli_index_defaults_to_keyword_and_native_alias_is_normalized(tmp_path, monkeypatch, capsys):
     import library_cli
     requested = []
 
@@ -183,11 +183,11 @@ def test_cli_index_default_is_native_keyword_and_requested_mode_failure_is_nonze
     monkeypatch.setattr(library_cli, 'LibraryStore', Store)
     monkeypatch.setattr(sys, 'argv', ['library_cli.py', '--data-dir', str(tmp_path), 'index'])
     assert library_cli.main() == 0
-    assert requested[-1] == ['native', 'qmd_keyword']
+    assert requested[-1] == ['qmd_keyword']
     capsys.readouterr()
     monkeypatch.setattr(sys, 'argv', ['library_cli.py', '--data-dir', str(tmp_path), 'index', '--modes', 'native,qmd_vector'])
     assert library_cli.main() == 1
-    assert requested[-1] == ['native', 'qmd_vector']
+    assert requested[-1] == ['qmd_keyword', 'qmd_vector']
     assert json.loads(capsys.readouterr().out)['modes']['qmd_vector']['ready'] is False
 
 

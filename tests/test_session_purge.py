@@ -50,6 +50,19 @@ def test_purge_removes_only_deleted_record_and_owned_snapshots(tmp_path):
             read()
 
 
+def test_permanent_plan_removal_also_removes_its_retained_draft(tmp_path):
+    from advisor.plan_drafts import PlanDraftStore
+    store = SessionStore(tmp_path, None, None)
+    task = deleted_plan(store)
+    drafts = PlanDraftStore(tmp_path)
+    drafts.capture(task['id'], {'revision': task['revision'], 'plan': {'summary': 'Original unsaved details'}})
+    other = store.create('Keep this other task and its independent draft', None)
+    drafts.capture(other['id'], {'revision': 1})
+    store.purge(task['id'], task['revision'], confirmed=True)
+    assert not (drafts.directory / (task['id'] + '.json')).exists()
+    assert (drafts.directory / (other['id'] + '.json')).is_file()
+
+
 def test_purge_accepts_deleted_plan_without_any_snapshots(tmp_path):
     store = SessionStore(tmp_path, None, None)
     value = store.create(GOAL, None)

@@ -14,15 +14,16 @@ import re
 import shutil
 import sqlite3
 import stat
-from contextlib import closing
+from contextlib import ExitStack, closing
 from pathlib import Path
 
 from .build_control import check_cancelled
 from .index_paths import SHARED_KEYWORD_STORAGE, resolve_index_manifest, serialize_index_manifest
 from .index_manifest_cache import read_manifest
 from .index_manifest import compact_manifest, manifest_pointer
-from . import native_index
+from . import object_index
 from . import qmd_shared
+from .qmd_worker import suspend_workers
 from .library_search import LibrarySearch, _NODE_BRIDGE, _hash, _json, _write_json, _corpus_hash
 
 JOURNAL_SCHEMA = "registered-library-index-purge/v1"
@@ -31,14 +32,11 @@ _LIBRARY_KEY = re.compile(r"lib_[a-f0-9]{20}\Z")
 _MANIFEST_LOCATORS = ("directory", "libraries", "path_schema", "keyword_storage")
 _OWNED_GENERATION = re.compile(r"[a-f0-9]{20}-[a-f0-9]{8}\Z")
 _NATIVE_FILES = {"objects.sqlite3" + suffix for suffix in ("", "-wal", "-shm", "-journal")}
-_NATIVE_TABLES = {"objects", "object_fts", "object_fts_data", "object_fts_idx", "object_fts_content", "object_fts_docsize", "object_fts_config"}
-_NATIVE_SQL = {
-    "objects": "CREATE TABLE objects(id TEXT PRIMARY KEY, library_id TEXT NOT NULL, title TEXT, text TEXT, object_json TEXT NOT NULL)",
-    "object_fts": "CREATE VIRTUAL TABLE object_fts USING fts5(id UNINDEXED,title,text,cjk,tokenize='porter unicode61')",
-}
 _SHARED_FILES = {"qmd-keyword.sqlite3" + suffix for suffix in ("", "-wal", "-shm", "-journal")}
 _SHARED_PROGRESS_FILES = {"qmd-keyword.progress.json", "qmd-keyword.sqlite3.progress.json"}
-_EMPTY_GENERATION_FILES = {"manifest.json", *_NATIVE_FILES, *_SHARED_FILES, *_SHARED_PROGRESS_FILES}
+_EMPTY_GENERATION_FILES = {"manifest.json", "query-scope-counts.json", "query-scope-counts.json.tmp",
+                           *_NATIVE_FILES, *_SHARED_FILES, *_SHARED_PROGRESS_FILES}
+_KEYWORD_INPUT = re.compile(r"\.qmd-keyword-inputs-[a-f0-9]{32}\.sqlite3(?:-(?:wal|shm|journal))?\Z")
 _REUSE_DIRECTORIES = ("keyword_reused_from_directory", "vector_reused_from_directory")
 
 
@@ -180,9 +178,7 @@ def _clean_native(path, library_id, *, load_objects=True, force_compact=False, o
             if names:
                 raise ValueError("Unrecognized native index schema; purge refused")
             return {"removed": 0, "objects": [], "ids": set(), "empty": True, "owned_schema": False}
-        if "object_fts" not in names:
-            raise ValueError("Native index FTS table is missing; purge refused")
-        compact = native_index.is_compact(db)
+        compact = object_index.is_compact(db)
         ids = {row[0] for row in db.execute("SELECT id FROM objects WHERE library_id=?", (library_id,))}
         if ids or force_compact:
             if on_dirty:
@@ -190,45 +186,32 @@ def _clean_native(path, library_id, *, load_objects=True, force_compact=False, o
             db.execute("PRAGMA secure_delete=ON")
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                if compact:
-                    native_index.delete_library(db, library_id)
-                else:
-                    db.execute("DELETE FROM object_fts WHERE id IN (SELECT id FROM objects WHERE library_id=?)", (library_id,))
-                    db.execute("DELETE FROM objects WHERE library_id=?", (library_id,))
+                object_index.delete_library(db, library_id)
                 # Required for generations that actually contained this library:
                 # stale FTS postings/free pages must not retain deleted payloads.
-                db.execute("INSERT INTO object_fts(object_fts) VALUES('optimize')")
+                if object_index.has_legacy_fts(db):
+                    db.execute("INSERT INTO object_fts(object_fts) VALUES('optimize')")
             db.execute("VACUUM")
             if db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
                 raise RuntimeError("Native index WAL could not be cleared; retry the purge after readers finish")
         empty = db.execute("SELECT 1 FROM objects LIMIT 1").fetchone() is None
         # An empty payload does not establish ownership of unrelated SQLite
         # tables, views, or triggers. Such a database is never disposable.
-        schema = {(row[0], row[1]) for row in db.execute("SELECT type,name FROM sqlite_master")}
-        definitions = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name IN ('objects','object_fts')"))
-        owned_schema = (names == _NATIVE_TABLES and schema == {
-            *(("table", name) for name in _NATIVE_TABLES), ("index", "sqlite_autoindex_objects_1")}
-            and all(" ".join(definitions.get(name, "").split()).casefold() == " ".join(sql.split()).casefold()
-                    for name, sql in _NATIVE_SQL.items())
-            and [row[1] for row in db.execute("PRAGMA table_info(objects)")] == ["id", "library_id", "title", "text", "object_json"]
-            and [row[1] for row in db.execute("PRAGMA table_info(object_fts)")] == ["id", "title", "text", "cjk"])
-        if compact:
-            owned_schema = native_index.owned_schema(db)
+        owned_schema = object_index.owned_schema(db)
         if not ids and not force_compact and not load_objects:
             return {"removed": 0, "objects": None, "ids": set(), "unchanged": True,
                     "empty": empty, "owned_schema": owned_schema}
         if compact:
             identities = [row[0] for row in db.execute("SELECT id FROM objects ORDER BY id")]
-            source_catalog = native_index.catalog_connection(catalog_path) if catalog_path and Path(catalog_path).is_file() else None
+            source_catalog = object_index.catalog_connection(catalog_path) if catalog_path and Path(catalog_path).is_file() else None
             try:
-                fingerprint = _corpus_hash(native_index.hydrate_object(db, identity, catalog_path=catalog_path, catalog_db=source_catalog) for identity in identities)
+                fingerprint = _corpus_hash(object_index.hydrate_object(db, identity, catalog_path=catalog_path, catalog_db=source_catalog) for identity in identities)
             finally:
                 if source_catalog is not None:
                     source_catalog.close()
             indexed = truncated = 0
-            for (raw,) in db.execute("SELECT representation_json FROM objects"):
+            for _, stats in object_index.iter_representation_stats(db):
                 check_cancelled()
-                stats = native_index.unpack(raw)
                 indexed += stats.get("indexed_characters", 0)
                 truncated += int(bool(stats.get("truncated")))
             # Manifest cleanup needs identities/counts, never retained full
@@ -323,7 +306,7 @@ def _clean_manifest(value, library_id, keys, native, *, active, generation):
             if isinstance(mode.get(field), dict):
                 mode[field].pop(library_id, None)
         if objects is None:
-            mode.update(ready=False, state="unavailable", error="Native source-object index is missing")
+            mode.update(ready=False, state="unavailable", error="Source-object metadata index is missing")
         elif not objects:
             mode.update(ready=False, state="empty")
     value["ready"] = any(mode.get("ready") for mode in value.get("modes", {}).values())
@@ -368,6 +351,23 @@ def _empty_manifest(value):
             and representation.get("objects", {}) == {})
 
 
+def _clean_keyword_inputs(root, directory):
+    """Remove crashed build spools while the existing purge lease excludes writers."""
+    removed = 0
+    if not directory.exists():
+        return removed
+    for path in directory.iterdir():
+        if not _KEYWORD_INPUT.fullmatch(path.name):
+            continue
+        _owned(root, path)
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("Temporary keyword input is not an unshared regular file")
+        removed += info.st_size
+        path.unlink()
+    return removed
+
+
 def _empty_inventory(root, directory):
     """Inventory only exporter-owned generation files; never recurse here."""
     _owned(root, directory)
@@ -379,7 +379,7 @@ def _empty_inventory(root, directory):
     for path in directory.iterdir():
         _owned(root, path)
         info = path.lstat()
-        if (path.name not in _EMPTY_GENERATION_FILES or not stat.S_ISREG(info.st_mode)
+        if ((path.name not in _EMPTY_GENERATION_FILES and not _KEYWORD_INPUT.fullmatch(path.name)) or not stat.S_ISREG(info.st_mode)
                 or info.st_nlink > 1 or getattr(info, "st_file_attributes", 0) & 0x400):
             return None
         inventory[path.name] = info.st_size
@@ -492,8 +492,15 @@ def purge_library_indexes(search_root, library_id, *, generation, on_progress=No
         search.lock.release()
         raise
     journal = root / "purge-pending.json"
+    worker_guard = ExitStack()
     try:
+        # Stop the persistent reader only after owning the build/purge lease.
+        # The guard also rejects startup warmups and new queries until cleanup
+        # releases that lease, including failure and cancellation paths.
+        worker_guard.enter_context(suspend_workers(root))
         check_cancelled()
+        from .case_context_index import strip_contexts_for_purge
+        summary["case_context_cleanup"] = strip_contexts_for_purge(root, library_id, on_progress=on_progress)
         cache = {}
         plan = _plan(root, library_id, generation, journal, cache)
         # A retry may follow a catalog change; use today's caller-supplied
@@ -533,6 +540,7 @@ def purge_library_indexes(search_root, library_id, *, generation, on_progress=No
                 entry["native_pending"] = False
                 _write_json(journal, plan)
             summary["native_objects_removed"] += native["removed"]
+            summary["search_metadata_bytes_removed"] += _clean_keyword_inputs(root, directory)
             shared = _clean_shared_keyword(root, directory, entry, plan, journal)
             native_results[relative].update(shared_empty=shared["empty"], shared_owned_schema=shared["owned_schema"])
             summary["library_index_bytes_removed"] += shared["reclaimed_bytes"]
@@ -565,6 +573,15 @@ def purge_library_indexes(search_root, library_id, *, generation, on_progress=No
             for key in keys:
                 summary["library_index_bytes_removed"] += _remove_library_directory(root, directory / key, validated_bytes=inventory[key])
             summary["generations_cleaned"] += 1
+        # Guides and navigation are derived from exact object identities. Drop
+        # the complete small caches so purged source hints cannot remain in JSON
+        # and retained libraries explicitly prepare fresh navigation metadata.
+        from .case_navigation import invalidate_navigation
+        from .case_context_index import rebind_after_purge
+        rebind_after_purge(root)
+        derived = invalidate_navigation(root)
+        summary["search_metadata_bytes_removed"] += derived["removed_bytes"]
+        summary["navigation_cache_files_removed"] = derived["removed_files"]
         _reclaim_empty_generations(root, plan, journal, cache, native_results, summary)
         if on_progress:
             on_progress({"stage": "indexes", "completed": total_generations, "total": total_generations, "unit": "generations"})
@@ -574,4 +591,7 @@ def purge_library_indexes(search_root, library_id, *, generation, on_progress=No
         try:
             search._release_lease(handle, token)
         finally:
-            search.lock.release()
+            try:
+                worker_guard.close()
+            finally:
+                search.lock.release()

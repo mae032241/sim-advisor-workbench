@@ -1,9 +1,10 @@
-"""Experimental single-MPH storage; existing plugin libraries do not use it.
+"""Canonical single-MPH storage and original-source evidence.
 
 Typed saved values are canonical SQLite rows. Feature evidence is a structural
 pointer into the unchanged original MPH, opened only when evidence is requested.
 Optional compact API observations use the same canonical values. This storage
 module never builds geometry, meshes, solvers, embeddings or model copies.
+Retrieval is provided by the registered library's QMD indexes.
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ import inspect
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import sqlite3
 import uuid
@@ -23,11 +23,8 @@ import zipfile
 
 FORMAT = "compact-mph-case/prototype-v1"
 DATABASE = "compactcase.sqlite3"
-_BRANCH_TERMS = {"mesh": "mesh meshing 网格 網格", "geometry": "geometry 几何 幾何",
-                 "physics": "physics 物理场 物理場", "material": "material 材料",
-                 "selection": "selection 选择 選擇", "study": "study 研究",
-                 "solver": "solver 求解器", "result": "result 结果 結果",
-                 "param": "parameter 参数 參數", "multiphysics": "multiphysics 多物理场 多物理場"}
+_RETIRED_SEARCH = ("Per-case native search is retired; register the source library and search "
+                   "with qmd_keyword or qmd_vector")
 
 
 class CompactCaseIntegrityError(ValueError):
@@ -69,27 +66,15 @@ def _signature(parser, explicit):
     return _hash_file(source) + ":" + parser.__qualname__
 
 
-def _preview(value, maximum=80):
-    """A small lexical hint; the complete typed value stays in value_pool."""
-    if value is None:
-        return ""
-    if isinstance(value, dict):
-        return " ".join(_preview(child, maximum) for child in list(value.values())[:4])[:maximum]
-    if isinstance(value, (list, tuple)):
-        return " ".join(_preview(child, maximum) for child in value[:4])[:maximum]
-    return str(value)[:maximum]
+def _validate_native_index(value):
+    if type(value) is not bool:
+        raise ValueError("native_index must be a boolean")
+    if value:
+        raise ValueError(_RETIRED_SEARCH)
 
 
-def _selection_names(value, named=False):
-    if isinstance(value, dict):
-        return " ".join(_selection_names(child, named or bool(re.search(r"name|reference|object|refs", key, re.I)))
-                        for key, child in value.items())
-    if isinstance(value, list):
-        return " ".join(_selection_names(child, named) for child in value)
-    return str(value) if named and isinstance(value, str) else ""
-
-
-def _schema(db, *, native_index=True):
+def _schema(db, *, native_index=False):
+    _validate_native_index(native_index)
     db.executescript("""
       PRAGMA foreign_keys=ON;
       CREATE TABLE symbols(id INTEGER PRIMARY KEY, value TEXT NOT NULL UNIQUE);
@@ -125,11 +110,10 @@ def _schema(db, *, native_index=True):
       CREATE INDEX selections_node ON selections(node_id);
       CREATE INDEX passages_document ON passages(document_id);
     """)
-    if native_index:
-        db.execute("CREATE VIRTUAL TABLE native_fts USING fts5(title,keywords,content='',tokenize='unicode61')")
 
 
-def _populate(db, parsed, source, source_hash, signature, *, native_index=True):
+def _populate(db, parsed, source, source_hash, signature, *, native_index=False):
+    _validate_native_index(native_index)
     pools = {"symbols": {}, "value_pool": {}, "metadata_pool": {}, "text_pool": {}}
 
     def intern(table, value):
@@ -151,7 +135,6 @@ def _populate(db, parsed, source, source_hash, signature, *, native_index=True):
     db.execute("INSERT INTO model VALUES(1,?,?,?,?,?,?,?,?,?,?,?)", (
         FORMAT, str(source), source_hash, source.stat().st_size, signature, "dmodel.xml" if raw else None,
         hashlib.sha256(raw).hexdigest() if raw else None, len(raw), metadata(details), metadata(case.get("coverage")), metadata(case.get("parser_contract"))))
-    index = {}
     for node in parsed["nodes"]:
         route = node.get("xml_route", [])
         if not isinstance(route, list) or any(type(part) is not int or part < 0 for part in route):
@@ -161,9 +144,6 @@ def _populate(db, parsed, source, source_hash, signature, *, native_index=True):
             symbol(node.get("label")), symbol(node.get("type")), symbol(node.get("feature_branch")),
             metadata({**({"attributes": node["attributes"]} if node.get("attributes") else {}),
                       **({"truncated": True} if node.get("truncated") else {})})))
-        branch = node.get("feature_branch", "")
-        title = " ".join(str(node.get(key) or "") for key in ("label", "tag", "kind", "type"))
-        index[node["id"]] = [title, [_BRANCH_TERMS.get(branch, str(branch or ""))]]
     for prop in parsed["properties"]:
         # The parser contract intentionally excludes raw XML, coverage, source
         # hashes and invariant warnings from these per-property metadata rows.
@@ -172,8 +152,6 @@ def _populate(db, parsed, source, source_hash, signature, *, native_index=True):
         db.execute("INSERT INTO properties(node_id,ordinal,child_index,name_id,status_id,type_id,value_id,metadata_id) VALUES(?,?,?,?,?,?,?,?)", (
             prop["node_id"], prop["ordinal"], prop["child_index"], symbol(prop.get("name")), symbol(prop.get("status")),
             symbol(prop.get("value_type")), intern("value_pool", value), metadata(extra)))
-        # Every actual name is included, even on nodes with many properties.
-        index[prop["node_id"]][1].append(str(prop.get("name") or "") + " " + _preview(value))
     for selection in parsed["selections"]:
         value = selection.get("value")
         if value is None or value == {} or value == [] or value == "":
@@ -181,7 +159,6 @@ def _populate(db, parsed, source, source_hash, signature, *, native_index=True):
         db.execute("INSERT INTO selections(node_id,ordinal,child_index,kind_id,status_id,value_id,metadata_id) VALUES(?,?,?,?,?,?,?)", (
             selection["node_id"], selection["ordinal"], selection["child_index"], symbol(selection.get("kind")), symbol(selection.get("status")),
             intern("value_pool", value), metadata({"truncated": True} if selection.get("truncated") else {})))
-        index[selection["node_id"]][1].append(str(selection.get("kind") or "") + " " + _selection_names(value) + " " + _preview(value))
     for document in parsed.get("documents", []):
         extra = {key: value for key, value in document.items() if key not in {"id", "source_uri", "source_sha256", "kind", "text"}}
         db.execute("INSERT INTO documents VALUES(?,?,?,?,?)", (document["id"], document.get("source_uri"), document.get("source_sha256"),
@@ -190,8 +167,6 @@ def _populate(db, parsed, source, source_hash, signature, *, native_index=True):
         extra = {key: value for key, value in passage.items() if key not in {"id", "document_id", "ordinal", "title", "kind", "text"}}
         db.execute("INSERT INTO passages VALUES(?,?,?,?,?,?,?)", (passage["id"], passage["document_id"], passage["ordinal"],
                    symbol(passage.get("title")), symbol(passage.get("kind")), intern("text_pool", passage.get("text", "")), metadata(extra)))
-    if native_index:
-        db.executemany("INSERT INTO native_fts(rowid,title,keywords) VALUES(?,?,?)", ((identity, title, " ".join(terms)) for identity, (title, terms) in index.items()))
     if db.execute("PRAGMA foreign_key_check").fetchone():
         raise ValueError("Parser returned a dangling compact-case reference")
 
@@ -235,27 +210,6 @@ def _api_complete(observation):
             and not observation.get("value_omitted") and not observation.get("truncated")
             and not (isinstance(value, dict) and value.get("source_only"))
             and observation.get("value_complete", True) is not False)
-
-
-def _refresh_native(db):
-    """Rebuild only lexical postings; contentless FTS retains no copied body."""
-    pool = CompactCase._pool
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='native_fts'").fetchone():
-        return
-    db.execute("INSERT INTO native_fts(native_fts) VALUES('delete-all')")
-    for node in db.execute("SELECT * FROM nodes ORDER BY id"):
-        title = " ".join(str(pool(db, "symbols", node[key + "_id"]) or "") for key in ("label", "tag", "kind", "type"))
-        branch = pool(db, "symbols", node["branch_id"]) or ""
-        terms = [_BRANCH_TERMS.get(branch, branch)]
-        for prop in db.execute("SELECT * FROM properties WHERE node_id=?", (node["id"],)):
-            terms.append(str(pool(db, "symbols", prop["name_id"]) or "") + " " + _preview(pool(db, "value_pool", prop["value_id"])))
-        for selection in db.execute("SELECT * FROM selections WHERE node_id=?", (node["id"],)):
-            value = pool(db, "value_pool", selection["value_id"])
-            terms.append(str(pool(db, "symbols", selection["kind_id"]) or "") + " " + _selection_names(value) + " " + _preview(value))
-        if _has_api(db):
-            for observation in db.execute("SELECT o.* FROM api_observations o JOIN api_nodes n ON n.id=o.api_node_id WHERE n.node_id=?", (node["id"],)):
-                terms.append(str(pool(db, "symbols", observation["name_id"]) or "") + " " + _preview(pool(db, "value_pool", observation["value_id"])))
-        db.execute("INSERT INTO native_fts(rowid,title,keywords) VALUES(?,?,?)", (node["id"], title, " ".join(dict.fromkeys(terms))))
 
 
 def add_compact_api(output, bundle=None, *, extractor=None, force=False, source_override=None, **extractor_options):
@@ -379,7 +333,6 @@ def add_compact_api(output, bundle=None, *, extractor=None, force=False, source_
                         _intern_existing(db, "symbols", observation.get("status")), _intern_existing(db, "symbols", observation.get("value_type")),
                         value_id, _intern_existing(db, "metadata_pool", extra) if extra else None, saved_id, _intern_existing(db, "symbols", comparison),
                         _intern_existing(db, "symbols", observation.get("relation")), _intern_existing(db, "symbols", observation.get("xml_attribute"))))
-                _refresh_native(db)
                 if db.execute("PRAGMA foreign_key_check").fetchone():
                     raise ValueError("Dangling API observation reference")
         if source.is_file() and _hash_file(source) != original["source_sha256"]:
@@ -392,15 +345,14 @@ def add_compact_api(output, bundle=None, *, extractor=None, force=False, source_
         shutil.rmtree(stage)
 
 
-def build_compact_case(source, output_dir, *, docs_root=None, parser=None, signature=None, native_index=True):
+def build_compact_case(source, output_dir, *, docs_root=None, parser=None, signature=None, native_index=False):
     """Build this experimental format, or reuse a verified unchanged case."""
     source, output = Path(source).resolve(strict=True), Path(output_dir).resolve()
     if not source.is_file() or source.suffix.lower() != ".mph":
         raise ValueError("source must be an original MPH file")
     if source.is_relative_to(output):
         raise ValueError("Use a separate output directory that does not contain the MPH source")
-    if type(native_index) is not bool:
-        raise ValueError("native_index must be a boolean")
+    _validate_native_index(native_index)
     if parser is None:
         from .compact_model import parse_compact_model
         parser = parse_compact_model
@@ -409,8 +361,7 @@ def build_compact_case(source, output_dir, *, docs_root=None, parser=None, signa
     if (output / DATABASE).is_file():
         try:
             current = CompactCase(output).read_case()
-            if (current["source_sha256"] == source_hash and current["parser_signature"] == signature
-                    and current["native_index"] == native_index):
+            if current["source_sha256"] == source_hash and current["parser_signature"] == signature:
                 return dict(current, cache_hit=True)
         except (CompactCaseIntegrityError, sqlite3.DatabaseError, OSError):
             pass
@@ -502,7 +453,7 @@ class CompactCase:
                           counts={table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                                   for table in ("nodes", "properties", "selections", "documents", "passages")},
                           source_available=(self.source_override or Path(model["source_path"])).is_file(),
-                          native_index=db.execute("SELECT 1 FROM sqlite_master WHERE name='native_fts'").fetchone() is not None)
+                          native_index=False)
             if self.source_override is not None:
                 result["source_path"] = str(self.source_override)
             result["api"] = self._api_summary(db)
@@ -781,19 +732,8 @@ class CompactCase:
         return True
 
     def search(self, query, *, limit=10):
-        if not isinstance(query, str) or len(query) > 2000:
-            raise ValueError("query must be a string of at most 2000 characters")
-        terms = list(dict.fromkeys(re.findall(r"[\w]+", query, re.UNICODE)))[:64]
-        if not terms:
-            return []
-        match = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
-        with closing(self._connect()) as db:
-            model = self._model(db)
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='native_fts'").fetchone():
-                raise ValueError("This compact case uses the library's shared native index")
-            hits = db.execute("SELECT rowid,bm25(native_fts,4,1) AS score FROM native_fts WHERE native_fts MATCH ? ORDER BY score,rowid LIMIT ?",
-                              (match, max(1, min(100, int(limit))))).fetchall()
-            return [dict(self._node(db, row["rowid"], model), score=row["score"], backend="compact-native-fts5") for row in hits]
+        """Compatibility entry point: all retrieval is provided by QMD."""
+        raise ValueError(_RETIRED_SEARCH)
 
 
 def read_case(output):

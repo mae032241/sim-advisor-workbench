@@ -57,6 +57,15 @@ test('search only sends an explicitly selected branch and never starts builds', 
   assert.ok(f.requests.every(request => request.path.startsWith('/api/search?') && !request.options.method));
 });
 
+test('case discovery uses the overview tool and ignores a leftover branch filter', async () => {
+  const f = fixture({}, () => ({result: {results: []}}));
+  f.get('search-query').value = 'potato drying';
+  f.get('search-kind').value = 'case'; f.get('search-feature-branch').value = 'mesh';
+  await f.run('searchSources({preventDefault() {}})');
+  assert.equal(f.requests.length, 1); assert.equal(f.requests[0].path, '/api/tools/call');
+  assert.deepEqual(JSON.parse(f.requests[0].options.body), {name: 'search_cases', arguments: {query: 'potato drying'}});
+});
+
 test('related references stay summaries until explicitly opened, and unresolved hints are never links', async () => {
   const f = fixture({
     'lo-main': {id: 'lo-main', title: 'Main source', text: 'full source body', related_sources: [

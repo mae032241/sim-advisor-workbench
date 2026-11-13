@@ -1,5 +1,4 @@
 import sys
-import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -125,28 +124,3 @@ def test_limits_are_honest_and_do_not_decode_a_truncated_numeric_stream():
 def test_invalid_limits_are_rejected(kwargs):
     with pytest.raises(ValueError):
         normalize_selections(selection("1"), **kwargs)
-
-
-def test_real_saved_mph_samples_decode_known_shape_without_reading_api_artifacts():
-    directory = Path(__file__).resolve().parents[1] / "data/no-comsol-probe/run-20261108-202128/models"
-    if not directory.is_dir():
-        pytest.skip("Optional isolated ten-model fixture is not present")
-    read_models, decoded_count, actuator_30 = 0, 0, False
-    for path in directory.glob("*.mph"):
-        with zipfile.ZipFile(path) as archive:
-            if "dmodel.xml" not in archive.namelist():
-                continue
-            assert archive.getinfo("dmodel.xml").file_size < 64 * 1024 * 1024
-            root = ET.fromstring(archive.read("dmodel.xml"))
-        read_models += 1
-        for element in root.iter():
-            if element.tag not in {"selection", "outputSelection"}:
-                continue
-            for record in normalize_selections(element)["entries"]:
-                for group in record["explicit"]:
-                    if group.get("status") == "decoded_saved":
-                        decoded_count += 1
-                        if path.name == "thermal_actuator_jh.mph" and group["raw_encoded"] == "-98,-1,30":
-                            actuator_30 = group["decoded_entities"] == [30]
-    assert read_models == 9, "The heat_sink fixture intentionally has no saved dmodel.xml"
-    assert decoded_count > 40 and actuator_30

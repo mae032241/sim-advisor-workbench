@@ -35,9 +35,9 @@ class PlanningServiceTests(unittest.TestCase):
 
     def test_public_schemas_are_backend_neutral_and_scope_is_explicit(self):
         definitions={s["name"]:s for s in tool_definitions()}
-        self.assertEqual(set(definitions),{"get_task_context","search_knowledge","read_source","save_plan","update_steps","get_library_scope","set_libraries_enabled"})
+        self.assertEqual(set(definitions),{"get_task_context","search_knowledge","search_cases","get_case_guide","read_case_configuration","read_source","save_plan","update_steps","get_library_scope","set_libraries_enabled","get_plan_draft","repair_plan_draft","review_plan","save_plan_settings","get_plan_settings","get_mechanism_checks","get_tool_contract"})
         for name,definition in definitions.items():
-            self.assertEqual("session_id" in definition["inputSchema"]["required"],name not in {"search_knowledge","read_source","get_library_scope","set_libraries_enabled"})
+            self.assertEqual("session_id" in definition["inputSchema"]["required"],name not in {"search_knowledge","search_cases","get_case_guide","read_case_configuration","read_source","get_library_scope","set_libraries_enabled","get_mechanism_checks","get_tool_contract"})
         self.assertIn("get_plan",{s["name"] for s in tool_definitions(bound=True,include_alias=True)})
         self.assertNotIn("session_id",tool_definitions(bound=True)[0]["inputSchema"]["properties"])
 
@@ -99,10 +99,12 @@ class PlanningServiceTests(unittest.TestCase):
         ledger = self.tools.read_sources(self.sid)
         context = self.tools.call_public("get_task_context", {"session_id": self.sid})
         summary = context["sources"][0]
-        for key in ("id", "revision_id", "url", "evidence", "coverage"):
+        for key in ("id", "revision_id", "coverage"):
             self.assertEqual(summary[key], source[key])
+        self.assertEqual(summary['evidence_summary']['count'], 1)
+        self.assertTrue(summary['evidence_summary']['details_omitted'])
         self.assertNotIn("text", summary)
-        self.assertNotIn("code", summary["data"])
+        self.assertNotIn("code", json.dumps(summary))
         self.assertNotIn("candidate_only", summary)
         self.assertNotIn("BODY_SENTINEL", json.dumps(context))
         self.assertNotIn("CODE_SENTINEL", json.dumps(context))
@@ -151,7 +153,11 @@ class IndependentHTTPToolsTests(unittest.TestCase):
                     return exc.code,json.load(exc)
             try:
                 code,result=request("/api/tools")
-                self.assertEqual(code,200);self.assertEqual(len(result["tools"]),11)
+                from advisor.chat_bridge_tools import external_tool_definitions
+                self.assertEqual(code,200)
+                self.assertEqual({tool['name'] for tool in result['tools']},
+                                 {tool['name'] for tool in tool_definitions() + external_tool_definitions()})
+                self.assertIn("get_mechanism_checks", {item["name"] for item in result["tools"]})
                 code,result=request("/api/tools/call",{"name":"get_task_context","arguments":{"session_id":task["id"]}})
                 self.assertEqual(code,200);self.assertEqual(result["result"]["id"],task["id"])
                 code,result=request("/api/tools/call",{"name":"search_knowledge","arguments":{"query":"thermal","kind":"manual","mode":"native"}})

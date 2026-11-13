@@ -1,6 +1,6 @@
 # DSH 插件打包
 
-完整插件为 `@local/sim-advisor-workbench`，当前版本 **0.2.49**。插件包含工作台 Python 源码、CLI、网页、规划提示词、DSH Bridge 和资源清单。COMSOL、官方资料、用户模型、资料库索引、模型权重、Python/Node 运行环境及依赖二进制均由用户自行准备。
+完整插件为 `@local/sim-advisor-workbench`，当前版本 **0.2.63**，以 [package.json](../integrations/dsh-sim-workbench/package.json) 为准。插件包含工作台 Python 源码、CLI、网页、规划提示词、DSH Bridge 和资源清单。COMSOL、官方资料、用户模型、资料库索引、模型权重、Python/Node 运行环境及依赖二进制均由用户自行准备。
 
 ## 构建与安装
 
@@ -10,7 +10,7 @@
 python scripts/build_dsh_workbench.py
 ```
 
-默认生成 `dist/sim-advisor-workbench-0.2.49.tgz`、资源清单和 SHA256 文件。也可用 `--out-dir <输出目录>` 指定目标。构建器按源码白名单组装 `runtime/`、`bridge/` 和其它插件资源，并复核压缩包内容。
+默认生成 `dist/sim-advisor-workbench-0.2.63.tgz`、资源清单和 SHA256 文件。也可用 `--out-dir <输出目录>` 指定目标。构建器按源码白名单组装 `runtime/`、`bridge/` 和其它插件资源，并复核压缩包内容。
 
 在 DSH 官方插件管理器中安装生成的 `.tgz`。插件源码目录不含完整打包资源，不能直接安装为完整插件。若已使用旧的独立 Bridge，先停用重复工具提供方，再启用完整插件。
 
@@ -20,7 +20,7 @@ python scripts/build_dsh_workbench.py
 
 侧栏或 `start_workbench` 按需启动或复用本插件工作台；`workbench_status` 查看状态；`create_workbench_plan` 创建并绑定当前 DSH 会话。启动服务不等于创建方案或开始模型调用。停止工作台只针对本插件拥有的服务。
 
-默认检索使用 native，QMD 关键词为可选扩展，向量构建和语义增强需显式选择。embedding 默认关闭。运行和数据迁移说明见 [DSH 接入](dsh-workbench.md)。
+默认检索使用 QMD 关键词，项目术语扩展后以 OR 执行一次 BM25 查询，向量构建和语义增强需显式选择。embedding 默认关闭。运行和数据迁移说明见 [DSH 接入](dsh-workbench.md)。
 
 ## 发布检查
 

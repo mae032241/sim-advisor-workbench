@@ -96,6 +96,17 @@ def private_output(root, output):
 
 def validate(root, case_ids=None):
     public_tree(root)
+    manifest_path = root / "public/manifest.json"
+    if case_ids is None and manifest_path.is_file():
+        manifest = core.load_json(manifest_path)
+        if manifest.get("schema") == "simulation-planning-benchmark/v3":
+            case_ids = [item["case_id"] for item in manifest["cases"]]
+            if (not case_ids or len(set(case_ids)) != len(case_ids)
+                    or manifest.get("case_count") != len(case_ids)):
+                raise ValueError("Invalid v3 benchmark case manifest")
+            found = {p.name for p in (root / "public/cases").iterdir() if p.is_dir()}
+            if found != set(case_ids):
+                raise ValueError("Public cases must match the v3 manifest")
     case_ids = case_ids or EXPECTED_CASES
     if case_ids == EXPECTED_CASES:
         found = {p.name for p in (root / "public/cases").iterdir() if p.is_dir()}
@@ -246,8 +257,8 @@ class KnowledgeGate:
         if name == "search_knowledge":
             if set(arguments) - {"query", "kind", "mode", "feature_branch", "library_ids"}:
                 raise ValueError("Unexpected search argument")
-            if arguments.get("mode", "native") not in {"native", "qmd_keyword"}:
-                raise ValueError("Benchmark search supports native and qmd_keyword only")
+            if arguments.get("mode", "qmd_keyword") not in {"native", "qmd_keyword"}:
+                raise ValueError("Benchmark search supports QMD keyword only")
             if arguments.get("kind", "all") not in {"all", "manual", "case", "code"}:
                 raise ValueError("Invalid knowledge kind")
             query = arguments.get("query")
@@ -257,7 +268,7 @@ class KnowledgeGate:
             if not isinstance(requested, list) or not requested or not set(requested) <= self.fixed_ids:
                 raise ValueError("Search cannot expand the fixed enabled library scope")
             args = {"query": query, "kind": arguments.get("kind", "all"),
-                    "mode": arguments.get("mode", "native"), "library_ids": sorted(set(requested))}
+                    "mode": "qmd_keyword", "library_ids": sorted(set(requested))}
             if "feature_branch" in arguments:
                 args["feature_branch"] = arguments["feature_branch"]
             response = workbench_call(self.base, name, args)
@@ -306,7 +317,7 @@ def weak_tools():
     return [tool("get_library_scope", "List the fixed enabled knowledge libraries.", {}, []),
             tool("search_knowledge", SEARCH_KNOWLEDGE_DESCRIPTION,
                  {"query": string, "kind": {"type": "string", "enum": ["all", "manual", "case", "code"]},
-                  "mode": {"type": "string", "enum": ["native", "qmd_keyword"]},
+                  "mode": {"type": "string", "enum": ["qmd_keyword"]},
                   "library_ids": {"type": "array", "items": string},
                   "feature_branch": {"type": "string", "enum": list(FEATURE_BRANCHES)}}, ["query", "kind", "mode"]),
             tool("read_source", READ_SOURCE_DESCRIPTION,
@@ -391,7 +402,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--root", type=Path, default=APP / "benchmarks/comsol-plan-v1")
     commands = p.add_subparsers(dest="command", required=True)
-    q = commands.add_parser("validate", help="Validate all 18 cases, or selected cases")
+    q = commands.add_parser("validate", help="Validate the benchmark case set, or selected cases")
     q.add_argument("--case", action="append", dest="cases")
     q = commands.add_parser("prepare-run", help="Copy anonymous public inputs into an empty planning directory")
     q.add_argument("--case", required=True)
@@ -418,7 +429,7 @@ def parser():
     q.add_argument("--case", required=True)
     q.add_argument("--assessments", type=Path, nargs="+", required=True)
     q.add_argument("--output", type=Path)
-    q = commands.add_parser("bundle", help="Create a public-only ZIP after validating all 18 cases")
+    q = commands.add_parser("bundle", help="Create a public-only ZIP after validating the benchmark case set")
     q.add_argument("--output", type=Path, required=True)
     q = commands.add_parser("plan", help="Explicitly run a selected model with read-only scoped knowledge tools")
     q.add_argument("--case", required=True)

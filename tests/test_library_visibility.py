@@ -12,6 +12,7 @@ from advisor.knowledge import KnowledgeBase
 from advisor.library_provider import LibraryKnowledgeProvider
 from advisor.library_search import LibrarySearch, LibraryVisibilityError
 from advisor.library_store import LibraryStore, encoded
+from advisor.knowledge import source_id
 from test_library_search import FakeEngineSearch, obj
 from test_knowledge import write_topic
 
@@ -107,7 +108,8 @@ def test_provider_explicit_closed_scopes_and_old_id_reads_are_blocked_but_intern
         assert provider.search("flow", filters=filters) == []
     assert legacy.calls == 0
     store.set_enabled("b", False)
-    assert provider.search("flow")[0]["id"] == "legacy-manual", "Unregistered legacy manuals remain available globally"
+    assert provider.search("flow") == [], "Unregistered archives are not a retrieval fallback"
+    assert legacy.calls == 0
     store.delete_library("a")
     with pytest.raises(PermissionError, match="资料库已关闭或删除"):
         provider.get_document(objects[0]["id"])
@@ -119,8 +121,8 @@ def test_provider_rechecks_after_slow_legacy_query(tmp_path):
     legacy = LegacySpy(lambda: store.set_enabled("a", False))
     provider = LibraryKnowledgeProvider(legacy, store.root)
     hits = provider.search("flow")
-    assert all(item.get("library_id") != "a" for item in hits)
-    assert any(item["id"] == "legacy-manual" for item in hits)
+    assert {item["library_id"] for item in hits} == {"a", "b"}
+    assert legacy.calls == 0
 
 
 def test_visibility_status_counts_do_not_change_physical_index_readiness(tmp_path):
@@ -130,13 +132,13 @@ def test_visibility_status_counts_do_not_change_physical_index_readiness(tmp_pat
     status = provider.status()
     assert status["library_visibility"] == {"enabled_library_count": 1, "disabled_library_count": 1,
         "deleted_library_count": 0, "searchable_object_count": 1, "physical_object_count": 2}
-    assert status["library_indexes"]["modes"]["native"]["ready"]
+    assert status["library_indexes"]["modes"]["qmd_keyword"]["ready"]
     store.delete_library("a")
     status = provider.status()
     assert status["library_visibility"]["deleted_library_count"] == 1
     assert status["library_visibility"]["disabled_library_count"] == 0
     assert status["library_visibility"]["physical_object_count"] == 2
-    assert status["library_indexes"]["modes"]["native"]["ready"]
+    assert status["library_indexes"]["modes"]["qmd_keyword"]["ready"]
 
 
 @pytest.mark.parametrize("patch", [{"enabled": "false"}, {"enabled": 1}, {"deleted_at": ""}, {"deleted_at": False}])
@@ -209,57 +211,55 @@ def manual_fixture(tmp_path, *, strong=1):
 
 
 @pytest.mark.parametrize('manual_type', ['official-manuals', 'user-manuals'])
-def test_disabled_manual_subtree_is_excluded_before_legacy_topk_and_like_wildcards_are_literal(tmp_path, manual_type):
-    kb, store = manual_fixture(tmp_path, strong=190)
-    assert kb.search("mesh sizing", limit=1)[0]["relative_path"].startswith("com.comsol.help.closed_part/")
-    library = store.register("Closed manuals", manual_type, [{"id": "manual", "role": "manuals", "path": str(kb.doc_root / "com.comsol.help.closed_part")}])
-    library = store.set_enabled(library["id"], True)
-    store.set_enabled(library["id"], False)
+def test_disabled_manual_subtree_blocks_legacy_body_reads_without_search_fallback(tmp_path, manual_type):
+    kb, store = manual_fixture(tmp_path)
+    closed_id = source_id("com.comsol.help.closed_part/closed-0.html")
+    open_id = source_id("com.comsol.help.closedXpart/open.html")
+    historical = kb.get_document(closed_id)
+    library = store.register("Closed manuals", manual_type,
+                             [{"id": "manual", "path": str(kb.doc_root / "com.comsol.help.closed_part")}])
     provider = LibraryKnowledgeProvider(kb, store.root)
-    hits = provider.search("mesh sizing", limit=1)
-    assert len(hits) == 1 and hits[0]["relative_path"] == "com.comsol.help.closedXpart/open.html"
-    historical = kb.get_document(kb.search("mesh sizing", limit=1)[0]["id"])
-    with pytest.raises(PermissionError, match="资料库已关闭或删除"):
-        provider.get_document(historical["id"])
-    assert kb.get_document(historical["id"])["text"] == historical["text"]
+    with pytest.raises(PermissionError):
+        provider.get_document(closed_id)
+    assert provider.get_document(open_id)
+    assert provider.search("mesh sizing") == []
+    assert kb.get_document(closed_id)["text"] == historical["text"]
     store.set_enabled(library["id"], True)
-    assert provider.search("mesh sizing", limit=1)[0]["relative_path"].startswith("com.comsol.help.closed_part/")
+    assert provider.get_document(closed_id)
     store.delete_library(library["id"])
-    assert provider.search("mesh sizing", limit=1)[0]["relative_path"] == "com.comsol.help.closedXpart/open.html"
+    with pytest.raises(PermissionError):
+        provider.get_document(closed_id)
 
 
 @pytest.mark.parametrize('manual_type', ['official-manuals', 'user-manuals'])
-def test_disabled_manual_whole_root_skips_legacy_and_concurrent_close_is_rechecked(tmp_path, monkeypatch, manual_type):
+def test_whole_manual_root_closing_during_legacy_read_wins(tmp_path, monkeypatch, manual_type):
     kb, store = manual_fixture(tmp_path)
-    library = store.register("All manuals", manual_type, [{"id": "manual", "role": "manuals", "path": str(kb.doc_root)}])
-    library = store.set_enabled(library["id"], True)
+    library = store.register("All manuals", manual_type, [{"id": "manual", "path": str(kb.doc_root)}])
+    store.set_enabled(library["id"], True)
     provider = LibraryKnowledgeProvider(kb, store.root)
-    original = kb.search
-
-    def close_while_searching(*args, **kwargs):
-        results = original(*args, **kwargs)
+    original = kb.get_document
+    def close_during_read(*args, **kwargs):
+        result = original(*args, **kwargs)
         store.set_enabled(library["id"], False)
-        return results
-
-    monkeypatch.setattr(kb, "search", close_while_searching)
-    assert provider.search("mesh sizing") == []
-    monkeypatch.setattr(kb, "search", lambda *_a, **_k: pytest.fail("A fully covered closed root must skip legacy retrieval"))
+        return result
+    monkeypatch.setattr(kb, "get_document", close_during_read)
+    with pytest.raises(PermissionError):
+        provider.get_document(source_id("com.comsol.help.closed_part/closed-0.html"))
+    monkeypatch.setattr(kb, "search", lambda *args, **kwargs: pytest.fail("Retired search must not run"))
     assert provider.search("mesh sizing") == []
 
 
 @pytest.mark.parametrize("type,role", [("user-models", "docs"), ("official-models", "docs")])
-def test_unrelated_library_types_cannot_suppress_builtin_manuals(tmp_path, type, role):
+def test_unrelated_model_library_does_not_hide_archived_manual_citation(tmp_path, type, role):
     kb, store = manual_fixture(tmp_path)
-    library = store.register("Not managed manuals", type, [{"id": "main", "role": role, "path": str(kb.doc_root)}])
-    library = store.set_enabled(library["id"], True)
-    store.set_enabled(library["id"], False)
-    assert LibraryKnowledgeProvider(kb, store.root).search("mesh sizing")
+    store.register("Models", type, [{"id": "main", "role": role, "path": str(kb.doc_root)}])
+    provider = LibraryKnowledgeProvider(kb, store.root)
+    assert provider.get_document(source_id("com.comsol.help.closedXpart/open.html"))
+    assert provider.search("mesh sizing") == []
 
 
-def test_legacy_prefix_exclusions_are_validated_and_do_not_claim_qmd_prefilter(tmp_path):
+def test_retired_prefix_search_options_are_explicit(tmp_path):
     kb, _ = manual_fixture(tmp_path)
-    for value in (["../escape"], ["D:/escape"], "not-a-list"):
+    for value in (["../escape"], ["D:/escape"], "not-a-list", ["com.comsol.help.closed_part"]):
         with pytest.raises(ValueError, match="exclude_relpath_prefixes"):
             kb.search("mesh", filters={"exclude_relpath_prefixes": value})
-    with pytest.raises(ValueError, match="require native"):
-        kb.search("mesh", filters={"backend": "qmd", "exclude_relpath_prefixes": ["com.comsol.help.closed_part"]})

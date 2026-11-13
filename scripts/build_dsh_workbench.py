@@ -21,8 +21,8 @@ TOP_LEVEL = ("run.py", "agent_cli.py", "agent_tools.py", "external_agent_client.
 PLUGIN_FILES = ("package.json", "index.js", "service.js", "dependency-profile.js", "offline-setup.js",
                 "config.js", "config-ui.js", "client.js", "cordis.patch.yml", "icon.svg", "README.md")
 RUNTIME_SCRIPTS = ("ingest_docs.py", "pageindex_bridge.py", "compare_offline_mph.py", "mph_extract/ReadMph.java", "mph_extract/ReadMphBatch.java", "enrich_model_api.py",
-                   "verify_offline_qmd.mjs", "normalize_tutorials.py", "verify_tutorial_normalization.py", "reclaim_tutorial_storage.py", "merge_qmd_indexes.py",
-                   "RESEARCH_PLANNER.md", "RETRIEVAL.md", "select_evaluation_cases.py", "configure_evaluation_set.py")
+                   "verify_offline_qmd.mjs", "remove_legacy_object_fts.py", "slim_object_index.py", "normalize_tutorials.py", "verify_tutorial_normalization.py", "reclaim_tutorial_storage.py", "merge_qmd_indexes.py",
+                   "RESEARCH_PLANNER.md", "RETRIEVAL.md", "select_evaluation_cases.py", "configure_evaluation_set.py", "build_case_guides.py", "enrich_case_contexts.py", "enrich_all_case_contexts.py")
 
 
 def collect_sources() -> dict[str, Path]:
@@ -72,7 +72,8 @@ def build(destination: Path) -> dict:
                               "tests", "COMSOL manuals and models", "local evaluation selections", "credentials", "session history"],
                  "external_dependencies": ["Python 3.12+ (DSH embedded or explicit)",
                                            "COMSOL documents/models supplied by user",
-                                           "Optional sim-cli, QMD, PageIndex, COMSOL installation"]}
+                                           "Node and QMD 2.8.3 for keyword retrieval",
+                                           "Optional sim-cli, PageIndex, COMSOL installation"]}
     resources["CONTENTS.json"] = (json.dumps(inventory, ensure_ascii=False, indent=2) + "\n").encode()
     destination.mkdir(parents=True, exist_ok=True)
     archive_path = destination / f"sim-advisor-workbench-{manifest['version']}.tgz"

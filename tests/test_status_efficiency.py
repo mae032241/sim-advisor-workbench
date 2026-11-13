@@ -31,7 +31,7 @@ def test_generation_uses_active_citation_ids_without_loading_any_document_body(t
 
 
 def test_summary_manifest_is_pruned_before_locator_resolution_and_full_copy(tmp_path, monkeypatch):
-    import advisor.library_search as module
+    from advisor import index_manifest, index_manifest_cache, index_paths
     search = FakeEngineSearch(tmp_path / "search")
     search.build([obj("one")], modes=["native"], generation="fixture")
     for path in (search.active_path, search.last_build_path):
@@ -40,13 +40,14 @@ def test_summary_manifest_is_pruned_before_locator_resolution_and_full_copy(tmp_
         path.write_text(json.dumps(value), encoding="utf-8")
     original = {path: path.read_bytes() for path in (search.active_path, search.last_build_path)}
     full = search.status()
-    resolve = module.resolve_index_manifest
+    resolve = index_paths.resolve_index_manifest
     resolved = []
     def inspect(value, root):
         assert "mapping" not in value and "representation" not in value
         resolved.append(value)
         return resolve(value, root)
-    monkeypatch.setattr(module, "resolve_index_manifest", inspect)
+    monkeypatch.setattr(index_manifest, "resolve_index_manifest", inspect)
+    monkeypatch.setattr(index_manifest_cache, "resolve_index_manifest", inspect)
     compact = search.status(summary=True)
     assert len(resolved) == 2
     assert compact == status_summary(full)

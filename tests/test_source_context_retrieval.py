@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from advisor.planning_service import PlanningService
+from advisor.query_terms import normalize_mode
 from advisor.evaluation_sets import HoldoutPolicy
 from advisor.library_store import encoded
 from test_library_search import FakeEngineSearch, obj
@@ -48,7 +49,7 @@ def test_existing_compact_hit_keeps_tutorial_identity_in_search_and_read_without
     assert hit["source_context"]["case_identity"] == "models.test.example"
     assert hit["source_context"]["role"] == "case_tutorial"
     assert hit["source_context"]["model_agreement"] == "not_verified"
-    assert hit["retrieval"]["backend"] == mode
+    assert hit["retrieval"]["backend"] == normalize_mode(mode)
     assert hit["retrieval"]["generation"] == "already-built"
     assert hit["retrieval"]["search_scope"]["kind"] == "manual"
     assert hit["retrieval"]["search_scope"]["library_id"] == "documents"

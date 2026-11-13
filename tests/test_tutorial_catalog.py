@@ -90,3 +90,56 @@ def test_document_owner_closing_during_archived_read_is_rechecked(tmp_path):
     with patch.object(store, '_compact_context', side_effect=closes_during_hydration):
         with pytest.raises(PermissionError, match='统一文档库'):
             store.read(copies[0]['id'])
+
+
+def test_tutorial_reads_probe_active_primary_keys_instead_of_scanning_unrelated_sources(tmp_path):
+    from test_tutorial_aliases import migrated
+    store, _, _, cases, _, _ = migrated(tmp_path)
+    before = links(store, cases[0], limit=40)
+    assert before
+    with closing(store.connect()) as db, db:
+        db.executemany('INSERT INTO active VALUES(?,?,?)',
+                       [('cs63-documents', 'unrelated-' + str(index), 'unrelated-revision-' + str(index))
+                        for index in range(12000)])
+    plans, progress = [], [0]
+    connect = store.connect
+
+    class CheckedConnection:
+        def __init__(self):
+            self.db = connect()
+
+        def execute(self, query, values=()):
+            if 'WITH documents AS' in query:
+                plans.extend(tuple(row) for row in self.db.execute('EXPLAIN QUERY PLAN ' + query, values))
+
+                def advanced():
+                    progress[0] += 100
+                    return 0
+
+                self.db.set_progress_handler(advanced, 100)
+            return self.db.execute(query, values)
+
+        def close(self):
+            self.db.close()
+
+    with patch.object(store, 'connect', side_effect=CheckedConnection):
+        after = links(store, cases[0], limit=40)
+    assert after == before
+    assert progress[0] < 10000, 'A few linked chapters must not scan the 12000 unrelated active sources'
+    for alias in ('a', 'ac'):
+        lookups = [row[3] for row in plans if 'SEARCH ' + alias + ' USING ' in row[3]]
+        assert lookups and all('library_id=? AND object_id=?' in item for item in lookups)
+        assert not any('SCAN ' + alias in row[3] for row in plans)
+
+
+def test_active_citation_under_another_logical_object_does_not_restore_a_retired_chapter(tmp_path):
+    from test_tutorial_aliases import migrated
+    store, _, _, cases, _, _ = migrated(tmp_path)
+    linked = links(store, cases[0], limit=40)
+    assert linked
+    removed = {item['id'] for item in linked}
+    with closing(store.connect()) as db, db:
+        for number, item in enumerate(linked):
+            db.execute('DELETE FROM active WHERE library_id=? AND citation_id=?', (item['library_id'], item['id']))
+            db.execute('INSERT INTO active VALUES(?,?,?)', (item['library_id'], 'wrong-logical-object-' + str(number), item['id']))
+    assert not removed.intersection(item['id'] for item in links(store, cases[0], limit=40))

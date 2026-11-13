@@ -7,10 +7,11 @@ import threading
 
 import pytest
 
-from advisor import native_index
+from advisor import object_index as native_index
 from advisor.build_control import BuildCancelled, BuildControl, build_control
 from advisor.index_paths import resolve_index_manifest
 from advisor.library_search import LibrarySearch, _corpus_hash
+from advisor.qmd_shared import keyword_input_spool
 from advisor.tutorial_index_migration import stage_tutorial_indexes, _backup, _export_manual, _manual_sql_delta
 from advisor.tutorial_migration import apply_plan_to_catalog, build_tutorial_migration_plan
 from test_tutorial_migration import _put, _record, _source, fixture as migration_fixture
@@ -79,23 +80,23 @@ def fixture(tmp_path):
     _put(store, [untouched])
     search = LibrarySearch(store.root / "search", preserve_history=True)
     with store.object_stream() as objects:
-        search.build(objects, modes=["native"], generation=objects.generation)
+        search.build(objects, modes=["qmd_keyword"], generation=objects.generation)
     old = search._load_active()
-    # This one-time migration intentionally supports only its original layout.
-    # Current constructors describe shared keywords even in native-only builds.
+    # Feed the historical per-library fixture from the real saved QMD bodies,
+    # never from an object-directory search-text cache.
+    saved_keywords = {library: (item['db_path'], item['collection']) for library, item in old['libraries'].items()}
     old.pop('keyword_storage', None)
-    for item in old['libraries'].values():
+    for library, item in old['libraries'].items():
+        source, collection = saved_keywords[library]
         item.pop('collection', None)
         item['db_path'] = str(Path(old['directory']) / item['key'] / 'qmd-keyword.sqlite3')
-    with closing(sqlite3.connect(Path(old["directory"]) / "objects.sqlite3")) as native:
-        for library, item in old["libraries"].items():
-            database = Path(item["db_path"])
-            database.parent.mkdir(parents=True, exist_ok=True)
-            with closing(sqlite3.connect(database)) as db, db:
-                qmd_schema(db)
-                for locator, raw in native.execute("SELECT qmd_path,search_input FROM objects WHERE library_id=?", (library,)):
-                    title, text, _ = native_index.unpack(raw)
-                    qmd_insert(db, locator.split("/", 1)[-1], title, text)
+        database = Path(item['db_path'])
+        database.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(source)) as saved, closing(sqlite3.connect(database)) as db, db:
+            qmd_schema(db)
+            for locator, title, body in saved.execute("""SELECT d.path,d.title,c.doc FROM documents d
+                JOIN content c ON c.hash=d.hash WHERE d.collection=? AND d.active=1 ORDER BY d.path""", (collection,)):
+                qmd_insert(db, locator, title, body)
     old["modes"]["qmd_keyword"] = {"ready": True, "state": "ready", "qmd_version": "2.8.3"}
     search._publish(Path(old["directory"]), old)
     plan = build_tutorial_migration_plan(store, tmp_path / "plan.sqlite3")
@@ -105,7 +106,9 @@ def fixture(tmp_path):
 
 def database_rows(path):
     with closing(sqlite3.connect(path)) as db:
-        return db.execute("SELECT rowid,* FROM objects ORDER BY rowid").fetchall()
+        return [(*row, native_index.representation_stats(db, row[1])) for row in
+                db.execute("SELECT rowid,id,library_id,kind,feature_branch,qmd_path,source_json FROM objects ORDER BY rowid")]
+
 
 
 def qmd_hits(path, query):
@@ -133,10 +136,11 @@ def test_stage_preserves_retained_native_rows_keyword_recall_and_catalog(tmp_pat
     new_retained = {row[1]: row for row in new_rows if row[1] in old_retained}
     assert new_retained == old_retained
     assert all(row[1] not in retired for row in new_rows)
-    assert all(row[-1] is None for row in new_rows)
+    assert all(row[-2] is None for row in new_rows)
+    assert not list(Path(result["directory"]).glob(".qmd-keyword-inputs-*"))
     manifest = resolve_index_manifest(result["manifest"], store.root / "search")
     assert result["manifest"]["directory"].startswith("generations/")
-    assert manifest["modes"]["native"]["ready"] and manifest["modes"]["qmd_keyword"]["ready"]
+    assert "native" not in manifest["modes"] and manifest["modes"]["qmd_keyword"]["ready"]
     assert manifest["modes"]["qmd_vector"] == {"ready": False, "state": "disabled", "enabled": False}
     assert len(FakeEngine.calls) == 1 and FakeEngine.calls[0][1] == 1800
     assert FakeEngine.calls[0][0]["key"] == manifest["libraries"]["cs63-documents"]["key"]
@@ -146,9 +150,9 @@ def test_stage_preserves_retained_native_rows_keyword_recall_and_catalog(tmp_pat
     assert not qmd_hits(manifest["libraries"]["cs63-documents"]["db_path"], '"Repeated PDF"')
     assert not Path(manifest["libraries"]["models"]["corpus"]).exists()
     with closing(sqlite3.connect(result["native_path"])) as db:
-        ids = {row[0] for row in db.execute("SELECT objects.id FROM objects JOIN object_fts ON object_fts.rowid=objects.rowid WHERE object_fts MATCH 'RetainedMeshExact'")}
-        assert ids == {retained["id"]}
-        assert not db.execute("SELECT rowid FROM object_fts WHERE object_fts MATCH '\"Repeated PDF\"'").fetchall()
+        assert native_index.owned_schema(db)
+        assert not native_index.has_legacy_fts(db)
+        assert db.execute("SELECT id FROM objects WHERE id=?", (retained["id"],)).fetchone() == (retained["id"],)
     for library in manifest["libraries"]:
         assert Path(manifest["libraries"][library]["db_path"]).stat().st_nlink == 1
     with closing(store.connect()) as db, db:
@@ -249,31 +253,43 @@ def test_bulk_sql_matches_sdk_markdown_titles_hashes_bodies_and_cjk_fts(tmp_path
                  ("Notes", "## SecondaryHeading\nChoose this heading."),
                  ("First line\nSecond line", "Line one\r\nLine two\nLast line.")]
     def native(path, entries):
+        items = []
         with closing(sqlite3.connect(path)) as db, db:
             native_index.create_schema(db)
             for identity, title, text in entries:
                 item = {"id": identity, "library_id": library, "title": title, "text": text, "kind": "manual", "type": "manual_topic", "data": {}}
                 native_index.insert_object(db, item, text, {"indexed_characters": len(text)}, "", standalone=False)
+                items.append(item)
+        return items
     old_native, new_native = tmp_path / "old-native.sqlite3", tmp_path / "new-native.sqlite3"
-    native(old_native, [("retained", "Retained", "Retained stable body."), ("retired", "Retired", "Remove this old copy.")])
-    native(new_native, [("retained", "Retained", "Retained stable body."), *[("canonical-" + str(i), title, text) for i, (title, text) in enumerate(canonical)]])
+    old_items = native(old_native, [("retained", "Retained", "Retained stable body."), ("retired", "Retired", "Remove this old copy.")])
+    new_items = native(new_native, [("retained", "Retained", "Retained stable body."), *[("canonical-" + str(i), title, text) for i, (title, text) in enumerate(canonical)]])
     plan_path = tmp_path / "plan.sqlite3"
     with closing(sqlite3.connect(plan_path)) as db, db:
         db.executescript("CREATE TABLE canonical_objects(id TEXT PRIMARY KEY,library_id TEXT); CREATE TABLE retirements(id TEXT PRIMARY KEY,library_id TEXT);")
         db.executemany("INSERT INTO canonical_objects VALUES(?,?)", (("canonical-" + str(i), library) for i in range(len(canonical))))
         db.execute("INSERT INTO retirements VALUES('retired',?)", (library,))
-    def sdk_build(name, source):
+    def sdk_build(name, source, items):
         directory = tmp_path / name
-        with closing(sqlite3.connect(source)) as db:
-            _export_manual(db, library, directory / "corpus", None)
+        with keyword_input_spool(directory) as inputs, closing(sqlite3.connect(source)) as db:
+            for item in items:
+                inputs.add(library, native_index.qmd_path(item), item["title"], item["text"])
+            inputs.seal()
+            _export_manual(db, library, directory / "corpus", None, inputs_path=inputs.path)
         item = {"db_path": str(directory / "qmd-keyword.sqlite3"), "corpus": str(directory / "corpus")}
         search._engine({"op": "update", **item, "embedding_enabled": False, "model_uri": None})
         return item
-    old, expected = sdk_build("old", old_native), sdk_build("expected", new_native)
+    old, expected = sdk_build("old", old_native, old_items), sdk_build("expected", new_native, new_items)
     actual = {"db_path": str(tmp_path / "actual/qmd-keyword.sqlite3"), "corpus": str(tmp_path / "actual/corpus")}
     _backup(old["db_path"], actual["db_path"])
     events = []
-    result = _manual_sql_delta(search, actual["db_path"], library, new_native, SimpleNamespace(path=plan_path), events.append)
+    with keyword_input_spool(tmp_path / "sql-inputs") as inputs:
+        for item in new_items:
+            if item["id"] != "retained":
+                inputs.add(library, native_index.qmd_path(item), item["title"], item["text"])
+        inputs.seal()
+        result = _manual_sql_delta(search, actual["db_path"], library, new_native, SimpleNamespace(path=plan_path), events.append,
+                                   inputs_path=inputs.path)
     assert result["inserted"] == 3 and result["retired"] == 1
     assert events and events[-1]["completed"] == 3
     def rows(item):
@@ -291,3 +307,34 @@ def test_bulk_sql_matches_sdk_markdown_titles_hashes_bodies_and_cjk_fts(tmp_path
                                                                     "embedding_enabled": False, "model_uri": None}))
         assert hits(actual) == hits(expected)
     assert not Path(actual["corpus"]).exists()
+
+
+def test_stage_slims_an_owned_v1_copy_without_reusing_its_search_text_cache(tmp_path):
+    from advisor.library_search import _representation
+    store, plan, old, *_ = fixture(tmp_path)
+    source = Path(old["directory"]) / "objects.sqlite3"
+    with closing(sqlite3.connect(source)) as db, db:
+        rows = db.execute("SELECT rowid,id,library_id,kind,feature_branch,qmd_path,source_json FROM objects ORDER BY rowid").fetchall()
+        statistics = dict(native_index.iter_representation_stats(db))
+        db.execute("DROP TABLE objects")
+        db.execute(native_index.V1_OBJECT_SQL)
+        db.execute("CREATE INDEX objects_scope ON objects(library_id,kind,feature_branch)")
+        db.execute("UPDATE object_metadata SET value=? WHERE key='schema'", (native_index.V1_SCHEMA,))
+        for rowid, identity, owner, kind, branch, locator, source_json in rows:
+            item = store.get(identity)
+            text, _ = _representation(item)
+            db.execute("""INSERT INTO objects(rowid,id,library_id,kind,feature_branch,qmd_path,representation_json,search_input,source_json)
+                VALUES(?,?,?,?,?,?,?,?,?)""", (rowid, identity, owner, kind, branch, locator,
+                native_index.pack(statistics[identity]), native_index.pack([item["title"], text, ""]), source_json))
+        assert native_index.owned_schema(db)
+    original = source.read_bytes()
+    expected = database_rows(source)
+    result = stage_tutorial_indexes(store, plan, engine_factory=FakeEngine, manual_strategy="sdk")
+    assert source.read_bytes() == original
+    retired = set(plan.iter_retirement_ids())
+    assert {row[1]: row for row in database_rows(result["native_path"]) if row[1] not in retired and row[1] in {r[1] for r in expected}} == {
+        row[1]: row for row in expected if row[1] not in retired}
+    with closing(sqlite3.connect(result["native_path"])) as db:
+        assert "search_input" not in {row[1] for row in db.execute("PRAGMA table_info(objects)")}
+        assert db.execute("SELECT value FROM object_metadata WHERE key='schema'").fetchone() == (native_index.SCHEMA,)
+    assert not list(Path(result["directory"]).glob(".qmd-keyword-inputs-*"))

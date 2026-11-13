@@ -1,4 +1,4 @@
-"""Shared keyword collections, built from saved QMD rows or native inputs.
+"""Shared keyword collections, built from saved QMD rows or temporary inputs.
 
 Only newly named outputs are constructed. Source databases are opened read only
 and vectors, model parsing, embeddings and Markdown exports are excluded.
@@ -6,7 +6,7 @@ and vectors, model parsing, embeddings and Markdown exports are excluded.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 import os
@@ -15,12 +15,15 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 
 from .build_control import BuildCancelled, BuildControl, build_control, check_cancelled
 from .process_runner import run_text
 
 KEYWORD_STORAGE = "shared-collections-v1"
 QMD_VERSION = "2.8.3"
+INPUT_APPLICATION_ID = 0x514D4449
+INPUT_VERSION = 1
 _COLLECTION = re.compile(r"lib_[a-f0-9]{20}\Z")
 _DOCUMENT = re.compile(r"o-[a-f0-9]{32}\.md\Z")
 
@@ -30,7 +33,6 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 import {createHash} from 'node:crypto';
-import {inflateSync} from 'node:zlib';
 const req=JSON.parse(readFileSync(0,'utf8'));
 for(const [key,value] of Object.entries(req.env||{}))process.env[key]=value;
 delete process.env.QMD_EMBED_MODEL;
@@ -54,7 +56,7 @@ const schema=source=>{
   if(source.prepare('SELECT 1 FROM content_vectors LIMIT 1').get()||source.prepare("SELECT 1 FROM sqlite_master WHERE name='vectors_vec'").get())throw new Error('Keyword merge refuses vector storage');
 };
 const result={keyword_storage:'shared-collections-v1',documents:0,collections:{},source_databases:0,embedding_invoked:false};
-let source=null,native=null;
+let source=null,inputs=null;
 try{
   const triggers=db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ('documents_ai','documents_au')").all();
   const insertContent=db.prepare('INSERT OR IGNORE INTO content(hash,doc,created_at) VALUES(?,?,?)');
@@ -73,7 +75,10 @@ try{
   db.exec('BEGIN IMMEDIATE');
   try{
     for(const row of triggers)db.exec('DROP TRIGGER '+row.name);
-    if(req.mode==='native')native=openSource(req.native_path);
+    if(req.mode==='inputs'){
+      inputs=openSource(req.inputs_path);
+      if(inputs.pragma('application_id',{simple:true})!==0x514d4449||inputs.pragma('user_version',{simple:true})!==1)throw new Error('Unsealed temporary QMD keyword inputs');
+    }
     const opened=new Set();
     for(const item of req.libraries){
       const digest=signature();let count=0,expected=0,context=null;
@@ -100,11 +105,10 @@ try{
           if(++count%1000===0)progress('merging_keyword_collection',count,expected,item.library_id);
         }
       }else{
-        expected=native.prepare('SELECT count(*) AS n FROM objects WHERE library_id=?').get(item.library_id).n;
-        for(const row of native.prepare('SELECT qmd_path,search_input FROM objects WHERE library_id=? ORDER BY qmd_path').iterate(item.library_id)){
-          const [originalTitle,text]=JSON.parse(inflateSync(row.search_input).toString('utf8'));
-          const path=row.qmd_path.split('/').pop(),body=('# '+originalTitle+'\n\n'+text).replaceAll('\n',req.newline);
-          if(row.qmd_path!==item.key+'/'+path)throw new Error('Native QMD library mapping mismatch');
+        expected=inputs.prepare('SELECT count(*) AS n FROM keyword_inputs WHERE library_id=?').get(item.library_id).n;
+        for(const row of inputs.prepare('SELECT qmd_path,title,text FROM keyword_inputs WHERE library_id=? ORDER BY qmd_path').iterate(item.library_id)){
+          const path=row.qmd_path.split('/').pop(),body=('# '+row.title+'\n\n'+row.text).replaceAll('\n',req.newline);
+          if(row.qmd_path!==item.key+'/'+path)throw new Error('Object QMD library mapping mismatch');
           insert(item.key,path,extractTitle(body,path),sha(body),body,now,now,now,digest);
           if(++count%1000===0)progress('building_keyword_collection',count,expected,item.library_id);
         }
@@ -117,7 +121,7 @@ try{
     for(const row of triggers)db.exec(row.sql);
     db.exec('COMMIT');result.source_databases=opened.size;
   }catch(error){db.exec('ROLLBACK');throw error;}
-  if(source){source.close();source=null;}if(native){native.close();native=null;}
+  if(source){source.close();source=null;}if(inputs){inputs.close();inputs=null;}
   for(const item of req.libraries){
     const digest=signature();let count=0;
     for(const row of db.prepare(`SELECT d.path,d.title,d.hash,d.created_at,d.modified_at,c.doc FROM documents d
@@ -137,7 +141,7 @@ try{
   result.contexts=db.prepare('SELECT count(*) AS n FROM store_collections WHERE context IS NOT NULL').get().n;
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   process.stdout.write('QMD_SHARED_RESULT='+JSON.stringify(result)+'\n');
-}finally{if(source)source.close();if(native)native.close();store.close();}
+}finally{if(source)source.close();if(inputs)inputs.close();store.close();}
 '''
 
 
@@ -240,18 +244,83 @@ def merge_keyword_indexes(libraries, output, *, qmd_dir, node, env=None, on_prog
                 on_progress=on_progress, timeout=timeout)
 
 
-def build_keyword_index(native_path, output, *, qmd_dir, node, libraries=None, env=None, on_progress=None, timeout=1800):
-    """Build once from compressed native search_input, without file exports."""
-    native = Path(native_path).expanduser().resolve(strict=True)
-    with closing(sqlite3.connect(native.as_uri() + "?mode=ro", uri=True)) as db:
+class _KeywordInputs:
+    """A disposable export of this build's exact revision representations."""
+
+    def __init__(self, directory):
+        directory = Path(directory).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        self.path = directory / (".qmd-keyword-inputs-" + uuid.uuid4().hex + ".sqlite3")
+        self._db = sqlite3.connect(self.path)
+        try:
+            # This is staging data, never an index authority or recovery source.
+            # No journal or WAL may retain a second copy of exported text.
+            self._db.executescript("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; "
+                f"PRAGMA application_id={INPUT_APPLICATION_ID}; "
+                "CREATE TABLE keyword_inputs(library_id TEXT NOT NULL,qmd_path TEXT PRIMARY KEY,title TEXT NOT NULL,text TEXT NOT NULL); "
+                "CREATE INDEX keyword_inputs_library ON keyword_inputs(library_id,qmd_path)")
+        except BaseException:
+            self.close()
+            raise
+
+    def add(self, library_id, qmd_path, title, text):
+        check_cancelled()
+        if self._db is None:
+            raise ValueError("Temporary keyword inputs are already sealed")
+        if (not isinstance(library_id, str) or not library_id or not isinstance(qmd_path, str)
+                or qmd_path.split('/') != [_key(library_id), qmd_path.rsplit('/', 1)[-1]]
+                or not _DOCUMENT.fullmatch(qmd_path.rsplit('/', 1)[-1])
+                or not isinstance(title, str) or not isinstance(text, str)):
+            raise ValueError("Invalid temporary QMD keyword input")
+        self._db.execute("INSERT INTO keyword_inputs VALUES(?,?,?,?)", (library_id, qmd_path, title, text))
+
+    def seal(self):
+        check_cancelled()
+        if self._db is None:
+            return
+        self._db.execute(f"PRAGMA user_version={INPUT_VERSION}")
+        self._db.commit()
+        self._db.close()
+        self._db = None
+        check_cancelled()
+
+    def close(self):
+        if self._db is not None:
+            self._db.close()
+            self._db = None
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            self.path.with_name(self.path.name + suffix).unlink(missing_ok=True)
+
+
+@contextmanager
+def keyword_input_spool(directory):
+    """Export only title/text until keyword construction finishes, then erase it.
+
+    Call ``add(library_id,qmd_path,title,text)`` for each exact source revision,
+    then ``seal()`` before passing ``path`` to ``build_keyword_index``. Leaving
+    the context removes staging data on success, failure and cancellation.
+    """
+    inputs = _KeywordInputs(directory)
+    try:
+        yield inputs
+    finally:
+        inputs.close()
+
+
+def build_keyword_index(inputs_path, output, *, qmd_dir, node, libraries=None, env=None, on_progress=None, timeout=1800):
+    """Build from a sealed temporary export; the object directory stores no text."""
+    inputs = Path(inputs_path).expanduser().resolve(strict=True)
+    with closing(sqlite3.connect(inputs.as_uri() + "?mode=ro", uri=True)) as db:
         db.execute("PRAGMA query_only=ON")
-        if "search_input" not in {row[1] for row in db.execute("PRAGMA table_info(objects)")}:
-            raise ValueError("Shared build requires compact native search_input")
-        counts = dict(db.execute("SELECT library_id,count(*) FROM objects GROUP BY library_id"))
+        if (db.execute("PRAGMA application_id").fetchone()[0] != INPUT_APPLICATION_ID
+                or db.execute("PRAGMA user_version").fetchone()[0] != INPUT_VERSION
+                or {row[1] for row in db.execute("PRAGMA table_info(keyword_inputs)")} != {"library_id", "qmd_path", "title", "text"}):
+            raise ValueError("Shared build requires sealed temporary QMD keyword inputs")
+        counts = dict(db.execute("SELECT library_id,count(*) FROM keyword_inputs GROUP BY library_id"))
     libraries = libraries if libraries is not None else {library: {} for library in counts}
-    if set(libraries) != set(counts):
-        raise ValueError("Shared keyword libraries differ from the native index")
-    return _run({"mode": "native", "native_path": str(native), "libraries": _libraries(libraries, merge=False)}, output,
+    if not counts or set(libraries) != set(counts):
+        raise ValueError("Shared keyword libraries differ from the temporary inputs")
+    return _run({"mode": "inputs", "inputs_path": str(inputs), "libraries": _libraries(libraries, merge=False)}, output,
                 qmd_dir=qmd_dir, node=node, env=env, on_progress=on_progress, timeout=timeout)
 
 

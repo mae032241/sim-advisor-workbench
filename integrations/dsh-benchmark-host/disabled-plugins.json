@@ -1,0 +1,12 @@
+[
+  "session-persistence-jsonl",
+  "session-query-sqlite",
+  "session-projection-cache",
+  "session-checkpoint-policy",
+  "session-telemetry-otel",
+  "spill-local",
+  "spill-policy",
+  "image-offload",
+  "otel",
+  "session-title-llm"
+]

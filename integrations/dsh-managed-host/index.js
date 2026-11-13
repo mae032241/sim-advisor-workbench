@@ -113,7 +113,16 @@ export async function startManagedHost(ctx, { callback, token }) {
           const value = response.value;
           if (value && typeof value === 'object' && Array.isArray(value.contentItems) && typeof value.success === 'boolean') {
             const text = value.contentItems.filter(item => item.type === 'inputText' && typeof item.text === 'string').map(item => item.text).join('\n');
-            if (!value.success) throw new Error(text.slice(0, 2000) || 'Local tool validation failed.');
+            if (!value.success) {
+              try {
+                const payload = JSON.parse(text);
+                if (payload && typeof payload === 'object' && Array.isArray(payload.errors)
+                    && (typeof payload.draft_id === 'string' || payload.error_code === 'tool_arguments_invalid')) {
+                  return JSON.parse(JSON.stringify({success: false, ...payload}).replaceAll(token, '[私有绑定凭据]'));
+                }
+              } catch { /* Non-structured errors keep the existing short form. */ }
+              throw new Error(text.slice(0, 2000) || 'Local tool validation failed.');
+            }
             return text;
           }
           return value;

@@ -127,7 +127,7 @@ class SessionStore:
             self.require_revision(current, revision)
             historical = self.version(session_id, target_revision)
             changed_intake = any(current.get(key) != historical.get(key) for key in ("goal", "model"))
-            for key in ("plan", "design_brief", "questions", "answers", "sources", "evidence_gaps", "research_trace",
+            for key in ("plan", "plan_settings", "design_brief", "questions", "answers", "sources", "evidence_gaps", "research_trace",
                         "geometry_reference_catalog", "question_archive", "answer_archive", "plan_stale", "planning_incomplete"):
                 if key in historical:
                     current[key] = copy.deepcopy(historical[key])
@@ -274,6 +274,7 @@ class SessionStore:
     def purge(self, session_id: str, revision: int, *, confirmed=False) -> dict:
         """Remove a deleted plan and its owned revision snapshots permanently.
 
+        Retained save drafts belong to this plan and are removed as well.
         Models, libraries, exports and Agent conversation records have separate
         ownership and are deliberately retained. Validate the complete deletion
         set first; never recursively delete an arbitrary directory. Keep the
@@ -305,6 +306,15 @@ class SessionStore:
                         raise ValueError("方案历史版本与快照文件标识不一致，拒绝彻底删除。")
                     snapshots.append((path, snapshot))
             records = [(tombstone, value), *snapshots]
+            draft = self._owned_path(self.paths.root / 'plan-drafts' / (session_id + '.json'))
+            if draft.exists():
+                if not draft.is_file() or draft.stat().st_nlink != 1:
+                    raise PermissionError('方案草稿不是独占的普通文件，拒绝彻底删除。')
+                if draft.stat().st_size > 2 * 1024 * 1024 + 65536:
+                    raise ValueError('方案草稿超过大小限制，拒绝彻底删除。')
+                record = json.loads(draft.read_text(encoding='utf-8'))
+                if record.get('schema') != 'sim-advisor-plan-draft/v1' or record.get('session_id') != session_id:
+                    raise ValueError('方案草稿归属不一致，拒绝彻底删除。')
             models = {record["model"]["path"]: record for _, record in records
                       if isinstance(record.get("model"), dict) and isinstance(record["model"].get("path"), str)}
             # A model can have changed between revisions. Protect every model
@@ -312,6 +322,10 @@ class SessionStore:
             for path, _ in records:
                 for record in models.values():
                     self._not_model_file(path, record)
+            if draft.exists():
+                for record in models.values():
+                    self._not_model_file(draft, record)
+                self._owned_path(draft).unlink()
             for path, _ in snapshots:
                 self._owned_path(path).unlink()
             if directory.exists():
@@ -533,7 +547,7 @@ class SessionStore:
             self.require_revision(value, revision)
             if not partial:
                 self.merge_questions(value, bundle)
-            for key in ("plan", "sources", "design_brief", "research_trace", "geometry_reference_catalog", "evidence_gaps"):
+            for key in ("plan", "plan_settings", "sources", "design_brief", "research_trace", "geometry_reference_catalog", "evidence_gaps"):
                 if key in bundle:
                     value[key] = bundle[key]
             if not partial:
@@ -608,10 +622,29 @@ def export_markdown(session: dict) -> str:
     sources = {s["id"]: s for s in session["sources"]}
     for i, step in enumerate(plan["steps"], 1):
         lines += ["", f"### {i}. {step['title']}", "", step["action"], "", "位置：" + step["location"], "", "作用域：" + step["selection"], "", "输入：" + "；".join(step["inputs"]), "", "依赖：" + (", ".join(step["depends_on"]) or "无"), "", "检查：" + "；".join(step["checks"]), "", "难点：" + step["difficulty"], ""]
+        for row in session.get("plan_settings", []):
+            if step["id"] not in row.get("step_ids", []):
+                continue
+            lines += ["- 设置与依据：" + row["setting"], "  对应要求：" + row["requirement"],
+                      "  拟用值：" + row["proposed_value"], "  采用状态：" + row["status"],
+                      "  迁移理由：" + row["transfer_rationale"], "  状态说明：" + row["reason"],
+                      "  剩余缺口：" + (row["gap"] or "作者未声明；不代表物理验证通过")]
+            for ref in row["source_refs"]:
+                lines += ["  参考原值：" + ref["stated_value"] + "；来源 `" + ref["source_id"] + "`；" + ref["context"] + "；定位 `" + ref["locator"] + "`"]
         for sid in step["source_ids"]:
             if sid in sources:
                 source = sources[sid]
                 lines += [f"- 依据 [{source['title']}]({source['url']}) · {source.get('section_path', '')}"]
+    step_ids = {step["id"] for step in plan["steps"]}
+    unassigned = [row for row in session.get("plan_settings", []) if not step_ids.intersection(row.get("step_ids", []))]
+    if unassigned:
+        lines += ["", "## 未采用与待处理设置", "", "以下保留作者的取舍和缺口，不代表已实施或通过验证。", ""]
+        for row in unassigned:
+            lines += ["- " + row["setting"] + "（" + row["status"] + "）", "  要求：" + row["requirement"],
+                      "  拟用值：" + row["proposed_value"], "  取舍：" + row["reason"],
+                      "  迁移理由：" + row["transfer_rationale"], "  缺口：" + (row["gap"] or "作者未声明")]
+            for ref in row["source_refs"]:
+                lines += ["  来源 `" + ref["source_id"] + "`；定位 `" + ref["locator"] + "`；原值：" + ref["stated_value"]]
     lines += ["", "## 待补充与难点", ""] + ["- " + s for s in plan["missing_information"] + plan["difficulties"]]
     lines += ["", "## 证据清单", "", plan["evidence_status"], ""]
     lines += [f"- [{s['title']}]({s['url']}) · {s['kind']} · COMSOL {s.get('version', '未知')} · `{s['id']}`" for s in session["sources"]]

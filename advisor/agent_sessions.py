@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from .planning_service import PlanningService,tool_definitions,SAVE_SCHEMA,PATCH_SCHEMA
+from .planning_service import PlanningService,tool_definitions,SAVE_SCHEMA,PATCH_SCHEMA,CONTRACT_TOOLS
 from .runtime_adapters import (get_runtime_factory,runtime_command,MANAGED_BACKENDS,
     managed_backend_key,managed_defaults,RuntimeUnavailableError)
 from .sessions import ConflictError, now, write_json
@@ -34,6 +35,13 @@ _UNSET = object()
 
 def planning_tools():
     return tool_definitions(bound=True,include_alias=True)
+
+
+# A resumed Codex thread keeps its original dynamic tools. Compare a startup
+# constant rather than inspecting configuration or rehashing on each request.
+PLANNING_CONTRACT_SHA256 = hashlib.sha256(json.dumps(
+    {"tools": planning_tools(), "instructions": INSTRUCTIONS},
+    ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 class AgentSessions:
@@ -90,11 +98,14 @@ class AgentSessions:
                     # belongs to the old host/workspace and must be reconnected.
                     threads = {}
                 normalized = {"managed_backend":selected,"backend_settings":profiles,"backend_threads":threads,
+                    "backend_contracts": {key:value for key,value in record.get("backend_contracts",{}).items()
+                                          if isinstance(value,str)},
                     "thread_id":threads.get(selected),"messages":record.get("messages",[]),"read_sources":record.get("read_sources",[]),
                     "workspace_root": str(self.data_dir.resolve()),
                     **profiles[selected],"connection_mode":record.get("connection_mode","managed")}
                 self.entries[sid] = {"record": normalized,
-                    "runtime": None, "activity": "", "error": None, "command_lock": threading.Lock(),
+                    "runtime": None, "activity": "", "error": None, "warning": None, "error_metadata": None,
+                    "last_turn": None, "turn_outcome_supported": False, "command_lock": threading.Lock(),
                     "chat_epoch": uuid.uuid4().hex, "chat_sequence": 0, "message_updates": deque(maxlen=256),
                     "lifecycle_revision": session.get("lifecycle_revision", 0), "deleted": False}
                 if path.is_file() and normalized != record:
@@ -221,7 +232,10 @@ class AgentSessions:
                 "model": state.get("model") or entry["record"]["model"],
                 "reasoning_effort": state.get("reasoning_effort") or entry["record"]["reasoning_effort"],
                 **managed,
-                **chat, "activity": entry["activity"], "error": entry["error"]}
+                **chat, "activity": entry["activity"], "error": entry["error"], "warning": entry["warning"],
+                "turn_outcome_supported": bool(state.get("turn_outcome_supported", entry["turn_outcome_supported"])),
+                "last_turn": copy.deepcopy(state.get("last_turn", entry["last_turn"])),
+                "error_metadata": copy.deepcopy(state.get("error_metadata", entry["error_metadata"]))}
 
     def settings(self, sid, model=_UNSET, reasoning_effort=_UNSET, *, connection_mode=None, managed_backend=None):
         entry = self._entry(sid)
@@ -279,9 +293,17 @@ class AgentSessions:
                 on_tool=lambda name, args: self.runtime_tool(sid, name, args, source_entry=entry),
                 model=entry["record"]["model"], reasoning_effort=entry["record"]["reasoning_effort"])
             entry["runtime"] = runtime
-            entry["error"] = None
+            entry["error"] = entry["warning"] = entry["error_metadata"] = entry["last_turn"] = None
+            entry["turn_outcome_supported"] = False
+            thread_id = entry["record"].get("thread_id")
+            refreshing_contract = bool(backend == "codex" and thread_id and
+                entry["record"]["backend_contracts"].get(backend) != PLANNING_CONTRACT_SHA256)
+            if refreshing_contract:
+                # Keep workbench messages, plan and old harness history intact;
+                # a fresh harness thread is required to register the new tools.
+                thread_id = None
             try:
-                started = runtime.start(thread_id=entry["record"].get("thread_id"),
+                started = runtime.start(thread_id=thread_id,
                                         tools=planning_tools(), instructions=INSTRUCTIONS)
             except Exception:
                 runtime.close()
@@ -291,6 +313,9 @@ class AgentSessions:
             with self.lock:
                 entry["record"]["thread_id"] = started["thread_id"]
                 entry["record"]["backend_threads"][backend] = started["thread_id"]
+                entry["record"]["backend_contracts"][backend] = PLANNING_CONTRACT_SHA256
+                if refreshing_contract:
+                    entry["warning"] = "工具规范已升级，已重新建立Agent执行会话；原方案和工作台聊天记录保留。"
                 self._persist(sid, entry)
         return self.status(sid)
 
@@ -311,6 +336,8 @@ class AgentSessions:
                 return self.status(sid)
             with self.lock:
                 entry["error"] = None
+                if not entry["runtime"].status().get("busy"):
+                    entry["warning"] = entry["error_metadata"] = entry["last_turn"] = None
                 entry["record"]["messages"].append({"role": "user", "text": text.strip(), "at": now()})
                 self._completed_message(entry, entry["record"]["messages"][-1])
                 self._persist(sid, entry)
@@ -398,6 +425,11 @@ class AgentSessions:
             # callbacks cannot update it without per-token JSON I/O.
             if entry.get("deleted") or self.entries.get(sid) is not entry:
                 return
+            if kind in {"turn", "error"} and event.get("turn_id") and entry["runtime"]:
+                state = entry["runtime"].status()
+                current = state.get("turn_id") or (state.get("last_turn") or {}).get("turn_id")
+                if current and current != event["turn_id"]:
+                    return
             if kind in {"text_delta", "message"} and event.get("text"):
                 messages = entry["record"]["messages"]
                 identity = event.get("item_id") or event.get("turn_id")
@@ -413,10 +445,29 @@ class AgentSessions:
             elif kind == "tool":
                 entry["activity"] = event.get("name", "正在使用工具")
             elif kind == "error":
-                entry["error"] = str(event.get("message") or "Agent 本轮执行未完成；已保存的方案保留，可继续对话。")[:500]
+                message = str(event.get("message") or "Agent 本轮执行未完成；已保存的方案保留，可继续对话。")[:500]
+                metadata = {key: event[key] for key in ("code", "category", "will_retry", "turn_id", "http_status") if key in event}
+                metadata["will_retry"] = event.get("will_retry") if type(event.get("will_retry")) is bool else None
+                entry["error_metadata"] = metadata
+                runtime = entry["runtime"]
+                if event.get("fatal") is False or (event.get("fatal") is not True and runtime and runtime.status().get("busy")):
+                    entry["warning"] = message
+                else:
+                    entry["error"] = message
                 self._persist(sid, entry)
             elif kind == "turn":
                 entry["activity"] = ""
+                status = event.get("status")
+                if event.get("event") == "started":
+                    entry["last_turn"] = entry["error_metadata"] = entry["error"] = entry["warning"] = None
+                elif event.get("event") == "completed" and status in {"completed", "failed", "interrupted"}:
+                    entry["turn_outcome_supported"] = True
+                    entry["last_turn"] = {"turn_id": event.get("turn_id"), "status": status}
+                    if status == "completed":
+                        entry["error"] = entry["warning"] = entry["error_metadata"] = None
+                    else:
+                        entry["error"] = "Agent 本轮执行失败；已保存的方案保留。" if status == "failed" else "Agent 本轮已中断；已保存的方案保留。"
+                        entry["error_metadata"] = copy.deepcopy(event.get("error_metadata")) or entry["error_metadata"]
                 self._persist(sid, entry)
 
     def register_external(self,sid,body):
@@ -478,6 +529,8 @@ class AgentSessions:
             if entry["record"]["connection_mode"] != "external":
                 raise PermissionError("此方案当前没有启用外部 Agent 绑定。")
             provenance = self.external.planning_provenance(sid, body["binding_id"])
+            if name in CONTRACT_TOOLS:
+                return self.tools.call(sid, name, arguments, provenance=provenance)
             return self.tools.call_public(name, fixed_arguments, provenance=provenance)
 
 
@@ -497,11 +550,13 @@ class AgentSessions:
             if source_entry is not None:
                 self._require_current_entry(sid, source_entry)
             return self.call_tool(sid, name, args)
-        except (ValueError, FileNotFoundError) as exc:
-            return {"success": False, "contentItems": [{"type": "inputText", "text": json.dumps({
-                "error": str(exc)[:500], "next_action": "核对参数；版本冲突先get_plan，来源缺失先检索/读取，再修正重试。"}, ensure_ascii=False)}]}
+        except (ValueError, FileNotFoundError, PermissionError) as exc:
+            details = getattr(exc, 'to_dict', None)
+            error = details() if callable(details) else {
+                "error": str(exc)[:500], "next_action": "核对参数；版本冲突先get_plan，来源缺失先检索/读取，再修正重试。"}
+            return {"success": False, "contentItems": [{"type": "inputText", "text": json.dumps(error, ensure_ascii=False)}]}
         except RuntimeError:
-            return {"success": False, "contentItems": [{"type": "inputText", "text": "本地工具暂不可用，未修改方案。检索可改用native模式，保留未解决的证据缺口。"}]}
+            return {"success": False, "contentItems": [{"type": "inputText", "text": "本地工具暂不可用，未修改方案。请检查 QMD 运行组件和资料库索引状态，保留未解决的证据缺口。"}]}
 
 
     def _monitor(self):

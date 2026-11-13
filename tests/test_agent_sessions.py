@@ -165,6 +165,45 @@ class AgentSessionTests(unittest.TestCase):
         self.agent.connect(self.sid)
         self.assertEqual(self.agent.status(self.sid)["thread_id"], "codex-test-thread")
 
+    def test_nonterminal_error_is_warning_and_success_clears_it_but_retains_outcome(self):
+        self.agent.message(self.sid, "先检查模型")
+        entry = self.agent.entries[self.sid]
+        self.agent._event(self.sid, {"type": "error", "message": "Codex reported an error.",
+            "code": "codex_error", "category": "httpConnectionFailed", "will_retry": True,
+            "fatal": False, "turn_id": "turn-test"})
+        state = self.agent.status(self.sid)
+        self.assertEqual(state["status"], "running")
+        self.assertIsNone(state["error"])
+        self.assertTrue(state["warning"])
+        self.assertTrue(state["error_metadata"]["will_retry"])
+        entry["runtime"].busy = False
+        self.agent._event(self.sid, {"type": "turn", "event": "completed", "status": "completed", "turn_id": "turn-test"})
+        state = self.agent.status(self.sid)
+        self.assertEqual(state["last_turn"], {"turn_id": "turn-test", "status": "completed"})
+        self.assertIsNone(state["error"])
+        self.assertIsNone(state["warning"])
+        self.assertIsNone(state["error_metadata"])
+        self.agent.disconnect(self.sid)
+        self.assertEqual(self.agent.status(self.sid)["last_turn"]["status"], "completed")
+
+    def test_failed_turn_without_error_is_exposed_and_new_turn_clears_old_outcome(self):
+        self.agent.message(self.sid, "先检查模型")
+        runtime = self.agent.entries[self.sid]["runtime"]
+        runtime.busy = False
+        self.agent._event(self.sid, {"type": "turn", "event": "completed", "status": "failed", "turn_id": "turn-test"})
+        state = self.agent.status(self.sid)
+        self.assertEqual(state["last_turn"]["status"], "failed")
+        self.assertTrue(state["error"])
+        self.agent.message(self.sid, "继续检查")
+        state = self.agent.status(self.sid)
+        self.assertEqual(state["status"], "running")
+        self.assertIsNone(state["last_turn"])
+        self.assertIsNone(state["error"])
+        self.agent._event(self.sid, {"type": "error", "message": "Late prior-turn error", "turn_id": "old-turn"})
+        self.agent._event(self.sid, {"type": "turn", "event": "completed", "status": "failed", "turn_id": "old-turn"})
+        self.assertIsNone(self.agent.status(self.sid)["error"])
+        self.assertIsNone(self.agent.status(self.sid)["last_turn"])
+
     def test_unknown_session_is_not_a_filesystem_path(self):
         with self.assertRaises(FileNotFoundError):
             self.agent.status("../another-plan")
@@ -183,7 +222,8 @@ class AgentSessionTests(unittest.TestCase):
         self.assertFalse(failed["success"])
         text = json.loads(failed["contentItems"][0]["text"])
         self.assertIn("版本已变化", text["error"])
-        self.assertIn("get_plan", text["next_action"])
+        self.assertEqual(text["next_action"]['tool'], 'get_task_context')
+        self.assertTrue(text['draft_id'])
 
     def test_agent_can_see_unresolved_method_gaps_before_reassessment(self):
         self.read()

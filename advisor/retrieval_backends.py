@@ -1,4 +1,4 @@
-"""Explicit optional retrieval adapters. Native search is never called PageIndex.
+"""QMD compatibility and the explicit optional PageIndex adapter.
 
 QMD's keyword command requires no GGUF downloads. Its own configuration/cache
 are isolated below data_dir. PageIndex is an opt-in PDF SDK adapter and requires
@@ -10,16 +10,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import re
 import shutil
-import sqlite3
 import subprocess
 import sys
-import uuid
 from functools import lru_cache
 from pathlib import Path
 from .offline_profile import load_offline_profile, retrieval_runtime
-from .retrieval_settings import read as read_embedding_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,12 +94,12 @@ def backend_status(data_dir: Path) -> dict:
     configured = bool(os.environ.get("SIM_ADVISOR_PAGEINDEX_MODEL"))
     credentials = any(os.environ.get(name) for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AZURE_API_KEY"))
     return {
-        "native": {"available": True, "mode": "native-html-hierarchy-sqlite-fts5", "detail": "COMSOL HTML topic boundaries and Eclipse TOC, explicit Chinese/English aliases, SQLite FTS5/BM25. No model required."},
-        "qmd": {"available": qmd_ready, "installed": bool(qmd), "mode": "qmd-keyword" if qmd_ready else "installed-unverified" if qmd else "not-installed",
-                "detail": verification.get("detail") or ("QMD installed; run scripts/ingest_docs.py --qmd to build and verify its isolated keyword index." if qmd else "QMD unavailable: " + "; ".join(runtime["errors"])),
+        "qmd": {"available": False, "installed": bool(qmd), "mode": "registered-library-index-required" if qmd else "not-installed",
+                "detail": "QMD installed; register source libraries and build qmd_keyword. Readiness is reported under library_indexes." if qmd else "QMD unavailable: " + "; ".join(runtime["errors"]),
                 "dependencies": runtime,
-                "document_count": verification.get("document_count", 0), "semantic_available": False,
-                "limitations": "This legacy full-manual corpus is keyword-only. Registered-library vector status is reported separately under library_indexes; its embedding cache does not imply vectors exist for this corpus."},
+                "document_count": 0, "semantic_available": False,
+                "archived_legacy_keyword": {"verified": qmd_ready, "document_count": verification.get("document_count", 0), "searchable": False},
+                "limitations": "Only registered-library QMD keyword/vector modes are supported. Legacy verification receipts are historical; unavailable QMD never falls back to another engine."},
         "pageindex": {"available": bool(pi and pi_verification.get("reasoning_verified") and configured), "installed": bool(pi), "mode": "pageindex-pdf-reasoning" if pi_verification.get("reasoning_verified") and configured else "awaiting-model-configuration" if pi else "not-installed",
                       "detail": pi_verification.get("detail") or ("PageIndex SDK installed. PDF tree indexing/reasoning is opt-in; set SIM_ADVISOR_PAGEINDEX_MODEL and provider credentials, then explicitly index a PDF." if pi else "PageIndex SDK not installed. Native HTML hierarchy is not PageIndex."),
                       "model_configured": configured, "provider_credentials_present": bool(credentials),
@@ -112,107 +108,23 @@ def backend_status(data_dir: Path) -> dict:
 
 
 class QMDAdapter:
+    """Compatibility facade for the single registered-library QMD engine."""
+
     def __init__(self, data_dir: Path):
-        self.root = (Path(data_dir) / "qmd").resolve()
-        self.dependencies = retrieval_runtime(data_dir, PROJECT_ROOT)
-        self.command = qmd_command(data_dir)
+        self.data_dir = Path(data_dir).resolve()
+        self.dependencies = retrieval_runtime(self.data_dir, PROJECT_ROOT)
+        self.command = qmd_command(self.data_dir)
 
-    def _env(self):
-        env = os.environ.copy()
-        env.pop("QMD_EMBED_MODEL", None)
-        env["XDG_CACHE_HOME"] = str(self.root / "cache")
-        env["XDG_CONFIG_HOME"] = str(self.root / "config")
-        env["QMD_CONFIG_DIR"] = str(self.root / "config/qmd")
-        env["QMD_FORCE_CPU"] = "1"
-        env["QMD_LLAMA_GPU"] = "false"
-        env["QMD_EMBED_PARALLELISM"] = "1"
-        if read_embedding_settings(self.root.parent)["enabled"] and self.dependencies["model_uri"]:
-            env["QMD_EMBED_MODEL"] = self.dependencies["model_uri"]
-        return env
-
-    def _run(self, args, timeout=60):
-        if not self.command:
-            raise RuntimeError("QMD CLI unavailable: " + "; ".join(self.dependencies["errors"]))
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._portable_configuration()
-        return subprocess.run(self.command + list(args), cwd=self.root, env=self._env(),
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
-
-    def _portable_configuration(self):
-        """Rebase only the legacy adapter-owned collection, never reindex it."""
-        config = self.root / "config/qmd/index.yml"
-        if not config.is_file():
-            return
-        text = config.read_text(encoding="utf-8")
-        if not re.search(r"(?m)^  comsol63:\s*$", text):
-            return
-        # This adapter runs all QMD commands with cwd=self.root. QMD persists
-        # the collection metadata from this local config on open; lexical
-        # search itself never calls update or document embedding.
-        updated = re.sub(r"(?m)^(  comsol63:\s*\n)    path:[^\n]*", r'\1    path: "corpus"', text, count=1)
-        if updated != text:
-            temporary = config.with_name(config.name + '.' + uuid.uuid4().hex + '.tmp')
-            try:
-                temporary.write_text(updated, encoding='utf-8')
-                os.replace(temporary, config)
-            finally:
-                temporary.unlink(missing_ok=True)
-
-    def prepare(self, knowledge_base) -> dict:
-        """Export *real source text* with identifiers, build QMD FTS, and probe it."""
-        corpus = self.root / "corpus"
-        corpus.mkdir(parents=True, exist_ok=True)
-        count = 0
-        exported_ids = set()
-        with knowledge_base._connect() as db:
-            for row in db.execute("SELECT * FROM documents ORDER BY relpath"):
-                metadata = {"source_id": row["id"], "kind": row["kind"], "version": row["version"], "branch": row["branch"], "package": row["package"]}
-                # JSON values are valid YAML scalars; preserve source text exactly.
-                frontmatter = "---\n" + "\n".join(f"{k}: {json.dumps(v)}" for k, v in metadata.items()) + "\n---\n"
-                document = knowledge_base._result(row, full=True)
-                body = frontmatter + f"# {row['title']}\n\nSource: {document['url']}\n\nTOC: {row['context']}\n\n" + row["text"]
-                target = corpus / (row["id"] + ".md")
-                if not target.exists() or target.read_text(encoding="utf-8") != body:
-                    target.write_text(body, encoding="utf-8")
-                count += 1
-                exported_ids.add(row["id"])
-        # Only this adapter's generated leaf files are eligible for removal.
-        for stale in corpus.glob("cs-*.md"):
-            if re.fullmatch(r"cs-[a-f0-9]{24}\.md", stale.name) and stale.stem not in exported_ids:
-                stale.unlink()
-        config = self.root / "config/qmd/index.yml"
-        config.parent.mkdir(parents=True, exist_ok=True)
-        # Direct configuration avoids changing any user/global QMD collections.
-        config.write_text('collections:\n  comsol63:\n    path: "corpus"\n    pattern: "**/*.md"\n    context:\n      "/": "Official local COMSOL 6.3 manuals, tutorials, and API reference. Preserve source_id provenance."\n', encoding="utf-8")
-        updated = self._run(["update"], timeout=240)
-        if updated.returncode:
-            result = {"ready": False, "document_count": count, "detail": (updated.stderr or updated.stdout)[-1800:]}
-        else:
-            try:
-                probe = self.search("heat transfer", 3)
-                result = {"ready": bool(probe), "document_count": count, "detail": f"Actual QMD keyword index built from {count} official HTML topics; heat transfer probe returned {len(probe)} source IDs. No GGUF/model download."}
-            except RuntimeError as exc:
-                result = {"ready": False, "document_count": count, "detail": str(exc)[-1800:]}
-        (self.root / "verified.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        return result
+    def prepare(self, knowledge_base=None) -> dict:
+        """Reindex registered source libraries without exporting a second corpus."""
+        from .library_store import LibraryStore
+        return LibraryStore(self.data_dir / "libraries").reindex(["qmd_keyword"])
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
-        proc = self._run(["search", query, "--json", "-n", str(max(1, min(limit, 180))), "-c", "comsol63"], timeout=30)
-        if proc.returncode:
-            raise RuntimeError((proc.stderr or proc.stdout)[-1500:])
-        output = proc.stdout.strip()
-        try:
-            values = json.loads(output)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("QMD did not return JSON") from exc
-        if isinstance(values, dict):
-            values = values.get("results", [])
-        results = []
-        for item in values:
-            match = re.search(r"cs-[a-f0-9]{24}", str(item.get("file", "")))
-            if match:
-                results.append({"id": match[0], "score": item.get("score", 0), "retrieval_backend": "qmd-keyword"})
-        return results
+        from .knowledge import KnowledgeBase
+        from .library_provider import LibraryKnowledgeProvider
+        provider = LibraryKnowledgeProvider(KnowledgeBase(self.data_dir), self.data_dir / "libraries")
+        return provider.search(query, limit=limit, filters={"mode": "qmd_keyword"})
 
 
 class PageIndexAdapter:

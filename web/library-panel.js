@@ -7,9 +7,9 @@
   const typeLabels = { "official-manuals": "官方手册资料", "official-models": "官方模型案例", "user-manuals": "自定义手册 / 文档", "user-models": "自定义模型案例" };
   const isManual = library => ["official-manuals", "user-manuals"].includes(library?.type);
   const objectLabels = { model_case: "模型案例", saved_configuration: "保存态功能配置", method_step: "方法步骤", code_example: "代码示例", code_fragment: "代码片段", document: "资料章节", manual_section: "手册章节", manual_topic: "手册主题", api_reference: "API 参考", implementation_snippet: "实现代码片段" };
-  const stageLabels = { queued: "等待构建", scanning: "扫描绑定目录", extracting: "逐文件提取 MPH / 文档", deep_api: "补充 Deep API 观测", publishing: "发布 API 增强版本", cleaning_indexes: "回收旧索引", archiving: "归档资料对象", indexing: "构建检索索引", indexing_native: "构建原生索引", indexing_keyword: "构建关键词索引", indexing_vector: "构建向量索引", cleaning_corpus: "清理临时检索语料", finished: "处理结束" };
+  const stageLabels = { queued: "等待构建", scanning: "扫描绑定目录", extracting: "逐文件提取 MPH / 文档", deep_api: "补充 Deep API 观测", publishing: "发布 API 增强版本", cleaning_indexes: "回收旧索引", archiving: "归档资料对象", indexing: "构建检索索引", indexing_objects: "写入公共对象目录", indexing_keyword: "构建关键词索引", indexing_vector: "构建向量索引", cleaning_corpus: "清理临时检索语料", finished: "处理结束" };
   const statusLabels = { queued: "排队中", running: "处理中", cancel_requested: "正在中断", completed: "已完成", succeeded: "已完成", partial: "部分完成 · 存在资料缺口", failed: "失败", interrupted: "已中断", cancelled: "已中断" };
-  const modeLabels = { native: "原生层级检索", qmd_keyword: "QMD 关键词索引", qmd_vector: "QMD 向量索引", pageindex: "PageIndex", keyword: "关键词索引", vector: "向量索引" };
+  const modeLabels = { qmd_keyword: "QMD 关键词索引", qmd_vector: "QMD 向量索引", pageindex: "PageIndex", keyword: "关键词索引", vector: "向量索引" };
   const vectorMode = mode => ["qmd_vector", "vector"].includes(mode);
   const terminal = new Set(["completed", "succeeded", "partial", "failed", "interrupted", "cancelled"]);
   const pending = (job) => ["queued", "running", "cancel_requested"].includes(job?.status);
@@ -131,7 +131,7 @@
     libraryFilters.append(refreshButton); header.append(headerText, libraryFilters); target.append(header);
     const message = node("div", "lp-message"); message.hidden = true; message.setAttribute("role", "status"); message.setAttribute("aria-live", "polite"); target.append(message);
     function say(text, error = false) { message.textContent = text; message.hidden = !text; message.classList.toggle("lp-error", error); }
-    const embeddingControl = node("section", "lp-embedding-control"), embeddingIdentity = node("div"), embeddingLabel = node("strong", "lp-embedding-status", "QMD embedding：未启用"), embeddingHint = node("p", "lp-help lp-embedding-hint", "默认关闭。原生与 QMD 关键词检索无需 embedding 权重。"), embeddingConfigure = button("配置 embedding", "lp-button lp-embedding-configure");
+    const embeddingControl = node("section", "lp-embedding-control"), embeddingIdentity = node("div"), embeddingLabel = node("strong", "lp-embedding-status", "QMD embedding：未启用"), embeddingHint = node("p", "lp-help lp-embedding-hint", "默认关闭。QMD 关键词检索无需 embedding 权重。"), embeddingConfigure = button("配置 embedding", "lp-button lp-embedding-configure");
     embeddingIdentity.append(embeddingLabel, embeddingHint); embeddingControl.append(embeddingIdentity, embeddingConfigure);
     const globalSettings = node("details", "lp-global-settings"); globalSettings.append(node("summary", "", "索引设置"), embeddingControl, cleanupEntry);
 
@@ -186,7 +186,7 @@
     const casesSection = node("section", "lp-case-selection"), caseSummary = node("p", "lp-case-summary"), caseRoots = node("p", "lp-help lp-case-roots"), caseDetails = node("details", "lp-case-files-details"), caseFiles = node("ul", "lp-case-files"), reloadModels = button("重新查找", "lp-button lp-button-quiet lp-find-models");
     casesSection.append(node("h4", "", "构建范围 · 当前资料库全部模型"), caseSummary, caseRoots);
     caseDetails.append(node("summary", "", "查看全部模型文件清单"), caseFiles);
-    casesSection.append(reloadModels, caseDetails); buildForm.append(casesSection, node("p", "lp-help", "构建当前登记目录中的全部资料，需要其他范围请新增资料库。默认只构建原生检索；关键词与向量按需勾选。Agent 注释保持关闭。"));
+    casesSection.append(reloadModels, caseDetails); buildForm.append(casesSection, node("p", "lp-help", "构建当前登记目录中的全部资料，需要其他范围请新增资料库。默认构建 QMD 关键词索引；向量默认关闭，需按需勾选。Agent 注释保持关闭。"));
     const extractionSection = node("section", "lp-extraction"), extractionMode = select([["offline", "离线解析（默认，无需 COMSOL）"], ["deep", "COMSOL 深度 API 增强"]]), extractionHelp = node("p", "lp-help lp-extraction-help");
     extractionMode.classList.add("lp-extraction-select"); extractionMode.value = "offline"; extractionMode.setAttribute("aria-label", "模型解析方式");
     extractionSection.append(field("模型解析方式", extractionMode), extractionHelp); buildForm.append(extractionSection);
@@ -206,18 +206,18 @@
     const jobViews = new Map(), jobsEmpty = node("p", "lp-empty", "此资料库尚无构建任务记录。"), jobHistory = node("details", "lp-history lp-job-items"), jobHistorySummary = node("summary"); jobHistory.append(jobHistorySummary);
     const searchHeading = node("div", "lp-section-heading"); searchHeading.append(node("h3", "", "查看资料库对象"), node("span", "lp-muted", "实际检索结果；不会以示例填充空库")); content.append(searchHeading);
     const searchForm = node("form", "lp-search-form"), searchInput = input("search", "搜索案例、方法步骤或代码，例如：heat transfer"); searchInput.required = true; searchInput.setAttribute("aria-label", "检索当前资料库对象");
-    const searchMode = select([["native", modeLabels.native], ["qmd_keyword", modeLabels.qmd_keyword], ["qmd_vector", modeLabels.qmd_vector]]); searchMode.setAttribute("aria-label", "资料库检索模式");
+    const searchMode = select([["qmd_keyword", modeLabels.qmd_keyword], ["qmd_vector", modeLabels.qmd_vector]]); searchMode.setAttribute("aria-label", "资料库检索模式");
     const searchButton = node("button", "lp-button lp-button-subtle", "检索对象"); searchButton.type = "submit"; searchForm.append(searchInput, searchMode, searchButton); const searchStatus = node("p", "lp-help lp-search-status", "选择资料库、检索模式并输入问题，查看真实对象。"), results = node("div", "lp-results"); searchStatus.setAttribute("role", "status"); content.append(searchForm, searchStatus, results);
     const sourceDialog = node("dialog", "lp-source-dialog"), sourceHead = node("div", "lp-source-heading"), sourceTitle = node("h3", "", "对象证据"), closeSource = button("×", "lp-close"), sourceContent = node("div", "lp-source-content"); closeSource.setAttribute("aria-label", "关闭对象证据"); closeSource.addEventListener("click", () => sourceDialog.close()); sourceHead.append(sourceTitle, closeSource); sourceDialog.append(sourceHead, sourceContent); target.append(sourceDialog);
     sourceDialog.addEventListener("close", () => { state.sourceSequence++; state.sourceController?.abort(); state.sourceController = null; state.configurationSequence++; state.configurationController?.abort(); state.configurationController = null; });
     const embeddingDialog = node("dialog", "lp-embedding-dialog"), embeddingForm = node("form", "lp-embedding-form"), embeddingToggle = input("checkbox"), embeddingToggleLabel = node("label", "lp-checkbox lp-embedding-toggle"), embeddingPath = input("text", "例如 D:\\models\\embedding.gguf"), embeddingStatus = node("p", "lp-help lp-embedding-dialog-status"), embeddingActions = node("div", "lp-delete-confirm-actions"), embeddingCancel = button("取消", "lp-button lp-embedding-cancel"), embeddingSave = node("button", "lp-button lp-button-primary lp-embedding-save", "保存设置");
     embeddingToggle.classList.add("lp-embedding-enable"); embeddingPath.classList.add("lp-embedding-path"); embeddingPath.spellcheck = false; embeddingPath.setAttribute("aria-label", "本地 embedding GGUF 绝对路径"); embeddingDialog.setAttribute("aria-label", "QMD embedding 全局配置"); embeddingStatus.setAttribute("role", "status"); embeddingSave.type = "submit";
     embeddingToggleLabel.append(embeddingToggle, node("span", "", "手动启用 QMD embedding")); embeddingActions.append(embeddingCancel, embeddingSave);
-    embeddingForm.append(node("h3", "", "QMD embedding · 全局控制"), node("p", "lp-help", "默认关闭，离线基础包无需携带 embedding 权重。原生与 QMD 关键词检索可直接使用。"), embeddingToggleLabel, field("本地 embedding GGUF 绝对路径", embeddingPath), node("p", "lp-help", "请自行准备本地 GGUF 文件；不会自动下载模型。启用设置后仍需按需选择向量构建或检索。关闭功能保留已有向量索引与模型文件。"), embeddingStatus, embeddingActions); embeddingDialog.append(embeddingForm); target.append(embeddingDialog);
+    embeddingForm.append(node("h3", "", "QMD embedding · 全局控制"), node("p", "lp-help", "默认关闭，离线基础包无需携带 embedding 权重。QMD 关键词检索可直接使用。"), embeddingToggleLabel, field("本地 embedding GGUF 绝对路径", embeddingPath), node("p", "lp-help", "请自行准备本地 GGUF 文件；不会自动下载模型。启用设置后仍需按需选择向量构建或检索。关闭功能保留已有向量索引与模型文件。"), embeddingStatus, embeddingActions); embeddingDialog.append(embeddingForm); target.append(embeddingDialog);
     const embeddingAvailable = () => state.embeddingStatus === "ready" && state.embedding.enabled === true && state.embedding.configured === true && !state.embeddingSaving;
     function renderEmbeddingControl() {
       textIfChanged(embeddingLabel, `QMD embedding：${state.embedding.enabled === true && state.embeddingStatus === "ready" ? "已启用" : "未启用"}${state.embeddingStatus === "error" ? "（状态未确认）" : ""}`);
-      textIfChanged(embeddingHint, state.embeddingStatus === "loading" ? "正在读取全局设置；原生与 QMD 关键词检索无需 embedding 权重。" : state.embeddingStatus === "error" ? `设置读取或保存未确认：${state.embeddingError}。向量功能保持停用，请刷新后核对；原生与 QMD 关键词仍可使用。` : state.embedding.enabled ? state.embedding.configured ? "已配置本地 GGUF；向量构建与检索仍需按需选择，不会自动运行。" : "已启用但本地 GGUF 未配置或不可用，请配置模型后使用向量功能。" : "默认关闭。先在 QMD 控制中手动启用 embedding；原生与 QMD 关键词检索无需权重。关闭不会删除已有向量索引。");
+      textIfChanged(embeddingHint, state.embeddingStatus === "loading" ? "正在读取全局设置；QMD 关键词检索无需 embedding 权重。" : state.embeddingStatus === "error" ? `设置读取或保存未确认：${state.embeddingError}。向量功能保持停用，请刷新后核对；QMD 关键词仍可使用。` : state.embedding.enabled ? state.embedding.configured ? "已配置本地 GGUF；向量构建与检索仍需按需选择，不会自动运行。" : "已启用但本地 GGUF 未配置或不可用，请配置模型后使用向量功能。" : "默认关闭。先在 QMD 控制中手动启用 embedding；QMD 关键词检索无需权重。关闭不会删除已有向量索引。");
       embeddingConfigure.disabled = state.embeddingSaving || state.embeddingStatus === "loading" || Boolean(state.libraryAction) || Boolean(cleanupSession) || globalBuildPending();
     }
     function updateEmbeddingDraft() {
@@ -226,7 +226,7 @@
     }
     function syncEmbeddingPolicy() {
       const available = embeddingAvailable();
-      modeChoices.querySelectorAll(".lp-vector-choice").forEach(label => { const check = label.querySelector("input"); check.disabled = !available; if (!available) { check.checked = false; state.modeChoices.set(check.value, false); } textIfChanged(label.querySelector(".lp-vector-help"), available ? "已在 QMD 控制中启用 embedding；CPU 构建可能耗时较长，向量仍需按需勾选。" : "先在 QMD 控制中手动启用 embedding；原生与关键词索引仍可构建。"); });
+      modeChoices.querySelectorAll(".lp-vector-choice").forEach(label => { const check = label.querySelector("input"); check.disabled = !available; if (!available) { check.checked = false; state.modeChoices.set(check.value, false); } textIfChanged(label.querySelector(".lp-vector-help"), available ? "已在 QMD 控制中启用 embedding；CPU 构建可能耗时较长，向量仍需按需勾选。" : "先在 QMD 控制中手动启用 embedding；QMD 关键词索引仍可构建。"); });
       indexes.querySelectorAll(".lp-vector-index-policy").forEach(note => textIfChanged(note, available ? "embedding 已手动启用；可用性仍以实际索引状态为准。" : "先在 QMD 控制中手动启用 embedding 后使用向量功能；已有向量索引保留。"));
       if (!available && vectorMode(searchMode.value)) { cancelSearch(); results.replaceChildren(); }
       syncSearchMode(); renderEmbeddingControl();
@@ -264,7 +264,7 @@
         if (state.destroyed || sequence !== state.embeddingSequence) return;
         if (!validEmbeddingSettings(settings) || settings.enabled !== enabled || enabled && settings.configured !== true) throw new Error("服务未确认所选 embedding 设置，请刷新核对");
         state.embedding = settings; state.embeddingStatus = "ready"; state.embeddingError = ""; state.embeddingSaving = false; updateEmbeddingDraft(); closeEmbedding(); syncEmbeddingPolicy();
-        say(enabled ? "QMD embedding 已手动启用，已配置本地 GGUF。尚未运行向量构建或检索。" : "QMD embedding 已关闭。原生与关键词检索可继续使用，已有向量索引及模型文件保留。");
+        say(enabled ? "QMD embedding 已手动启用，已配置本地 GGUF。尚未运行向量构建或检索。" : "QMD embedding 已关闭。QMD 关键词检索可继续使用，已有向量索引及模型文件保留。");
       } catch (error) {
         if (!state.destroyed && sequence === state.embeddingSequence && error.name !== "AbortError") { state.embedding = {...state.embedding, enabled: false}; state.embeddingStatus = "error"; state.embeddingError = error.message; embeddingStatus.textContent = `embedding 设置结果未确认：${error.message}。请刷新核对，不会自动重发。`; embeddingStatus.classList.add("lp-error"); }
       } finally { if (!state.destroyed && sequence === state.embeddingSequence) { state.embeddingController = null; state.embeddingSaving = false; updateEmbeddingDraft(); syncEmbeddingPolicy(); } }
@@ -342,7 +342,7 @@
     const cleanupDialog = node("dialog", "lp-cleanup-dialog"), cleanupSummary = node("p", "lp-cleanup-summary"), cleanupStatus = node("p", "lp-help lp-cleanup-status"), cleanupActions = node("div", "lp-delete-confirm-actions"), cleanupCancel = button("取消", "lp-button lp-cleanup-cancel"), cleanupRetry = button("重新检查", "lp-button lp-cleanup-retry"), cleanupConfirm = button("确认清理", "lp-button lp-library-delete lp-cleanup-confirm");
     cleanupDialog.setAttribute("aria-label", "清理未完成向量索引（全局）"); cleanupStatus.setAttribute("role", "status"); cleanupStatus.setAttribute("aria-live", "polite");
     cleanupActions.append(cleanupCancel, cleanupRetry, cleanupConfirm);
-    cleanupDialog.append(node("h3", "", "清理未完成向量索引"), node("p", "lp-cleanup-scope", "全局范围：所有资料库的当前及历史索引代次，不受所选资料库限制。"), node("p", "lp-help", "仅清理本次构建未完成、尚未发布为可用索引的向量文件，不会清理其他历史索引或解析产物。保留原生索引、关键词索引、已发布 / 已就绪向量索引、原始模型与手册、已入库内容和 GGUF 模型。"), cleanupSummary, cleanupStatus, cleanupActions); target.append(cleanupDialog);
+    cleanupDialog.append(node("h3", "", "清理未完成向量索引"), node("p", "lp-cleanup-scope", "全局范围：所有资料库的当前及历史索引代次，不受所选资料库限制。"), node("p", "lp-help", "仅清理本次构建未完成、尚未发布为可用索引的向量文件，不会清理其他历史索引或解析产物。保留QMD 关键词索引、已发布 / 已就绪向量索引、原始模型与手册、已入库内容和 GGUF 模型。"), cleanupSummary, cleanupStatus, cleanupActions); target.append(cleanupDialog);
     let cleanupSession = null;
     const globalBuildPending = () => state.buildBusy || state.jobs.some(pending) || state.indexes.building === true || indexEntries(state.indexes).some(([, index]) => [index.state, index.status].includes("building"));
     function syncCleanupControls() {
@@ -399,7 +399,7 @@
         if (result.status !== "cleaned" || result.cleaned !== true) throw new Error(`服务尚未确认清理完成，请刷新状态并重新检查。${list(result.warnings).filter(item => typeof item === "string").join("；")}`);
         state.libraryAction = null; session.phase = "done"; closeCleanup(true);
         const refreshed = await refresh(true); if (state.destroyed) return;
-        say(`未完成向量索引已清理${count(result.file_count) === null ? "" : `：${result.file_count} 个文件${count(result.bytes) === null ? "" : `，${byteText(result.bytes)}`}`}。原生、关键词及已发布 / 已就绪向量索引、原文件、入库内容与 GGUF 模型保留。${list(result.warnings).filter(item => typeof item === "string" && item.trim()).map(item => `\n${item}`).join("")}${refreshed ? "" : "\n索引状态刷新未确认，请手动刷新核对。"}`, !refreshed);
+        say(`未完成向量索引已清理${count(result.file_count) === null ? "" : `：${result.file_count} 个文件${count(result.bytes) === null ? "" : `，${byteText(result.bytes)}`}`}。QMD 关键词及已发布 / 已就绪向量索引、原文件、入库内容与 GGUF 模型保留。${list(result.warnings).filter(item => typeof item === "string" && item.trim()).map(item => `\n${item}`).join("")}${refreshed ? "" : "\n索引状态刷新未确认，请手动刷新核对。"}`, !refreshed);
       } catch (error) {
         if (!state.destroyed && cleanupSession === session && error.name !== "AbortError") { session.phase = "error"; cleanupStatus.textContent = `清理结果未确认：${error.message}\n请刷新状态并重新检查后再决定是否清理；不会自动重发。`; cleanupStatus.classList.add("lp-error"); say(cleanupStatus.textContent, true); }
       } finally {
@@ -554,7 +554,7 @@
       state.lifecycleSearchNotice = null;
       Array.from(searchMode.options).forEach((option) => { option.disabled = vectorMode(option.value) && !embeddingAvailable(); option.textContent = `${modeLabels[option.value] || option.value}${option.disabled ? " · 先手动启用 embedding" : modeReady(option.value) ? "" : " · 未就绪"}`; });
       const ready = modeReady(searchMode.value), index = modeState(searchMode.value);
-      if (!ready) { searchStatus.textContent = vectorMode(searchMode.value) && !embeddingAvailable() ? "先在 QMD 控制中手动启用 embedding 并配置本地 GGUF，再使用向量检索。原生与 QMD 关键词检索无需 embedding 权重。" : `所选模式「${modeLabels[searchMode.value] || searchMode.value}」尚未就绪：${index.error || index.detail || ({ not_built: "尚未构建", not_requested: "本次构建未请求此模式", stale: "索引或模型指纹已失效", failed: "索引构建失败" })[index.state || index.status] || "服务尚未报告可用索引"}。请先构建或检查状态；不会自动改用其他检索模式。`; state.modeBlocked = true; }
+      if (!ready) { searchStatus.textContent = vectorMode(searchMode.value) && !embeddingAvailable() ? "先在 QMD 控制中手动启用 embedding 并配置本地 GGUF，再使用向量检索。QMD 关键词检索无需 embedding 权重。" : `所选模式「${modeLabels[searchMode.value] || searchMode.value}」尚未就绪：${index.error || index.detail || ({ not_built: "尚未构建", not_requested: "本次构建未请求此模式", stale: "索引或模型指纹已失效", failed: "索引构建失败" })[index.state || index.status] || "服务尚未报告可用索引"}。请先构建或检查状态；不会自动改用其他检索模式。`; state.modeBlocked = true; }
       else if (state.modeBlocked) { searchStatus.textContent = `已选择「${modeLabels[searchMode.value] || searchMode.value}」。输入问题后查询此模式的真实结果。`; state.modeBlocked = false; }
       searchStatus.classList.toggle("lp-search-error", !ready); setDisabled();
     }
@@ -569,7 +569,7 @@
       const grid = node("dl", "lp-coverage"); entries.forEach(([key, status]) => { const item = node("div"); item.append(node("dt", "", key), node("dd", "", objectText(status))); grid.append(item); }); details.append(grid); container.append(details);
     }
     function renderModes() {
-      const entries = indexEntries(state.indexes); const provided = list(options.modes).map((key) => [key, {}]); const choices = entries.length ? entries : provided.length ? provided : [["native", {}], ["qmd_keyword", {}], ["qmd_vector", {}]];
+      const entries = indexEntries(state.indexes).filter(([key]) => ["qmd_keyword", "qmd_vector"].includes(key)); const choices = ["qmd_keyword", "qmd_vector"].map(mode => entries.find(([key]) => key === mode) || [mode, {}]);
       indexes.replaceChildren(); modeChoices.replaceChildren();
       const indexedLibraries = state.indexes.libraries;
       indexCoverage.textContent = state.indexes.generation ? `当前索引代次：${state.indexes.generation}。${state.selected && indexedLibraries && typeof indexedLibraries === "object" ? Object.prototype.hasOwnProperty.call(indexedLibraries, state.selected) ? "已包含当前资料库。" : "当前活跃索引尚未包含所选资料库。" : "以下是服务报告的全局索引状态。"}` : "以下是服务报告的全局索引状态；尚未报告活跃索引代次。";
@@ -580,10 +580,10 @@
         if (vectorMode(mode)) card.append(node("p", "lp-help lp-vector-index-policy", embeddingAvailable() ? "embedding 已手动启用；可用性仍以实际索引状态为准。" : "先在 QMD 控制中手动启用 embedding 后使用向量功能；已有向量索引保留。"));
         const metadata = Object.entries(index).filter(([key]) => !["label", "detail", "error"].includes(key)); if (metadata.length) { const details = node("details", "lp-index-details"); details.append(node("summary", "", "原始索引状态"), node("pre", "lp-raw", JSON.stringify(Object.fromEntries(metadata), null, 2))); card.append(details); }
         indexes.append(card);
-        const label = node("label", "lp-checkbox"), check = input("checkbox"); check.value = mode; check.checked = state.modeChoices.has(mode) ? state.modeChoices.get(mode) : mode === "native";
+        const label = node("label", "lp-checkbox"), check = input("checkbox"); check.value = mode; check.checked = state.modeChoices.has(mode) ? state.modeChoices.get(mode) : mode === "qmd_keyword";
         check.disabled = vectorMode(mode) && !embeddingAvailable(); if (check.disabled) { check.checked = false; state.modeChoices.set(mode, false); }
         check.addEventListener("change", () => { if (vectorMode(mode) && !embeddingAvailable()) check.checked = false; state.modeChoices.set(mode, check.checked); }); label.append(check, node("span", "", index.label || modeLabels[mode] || mode));
-        if (vectorMode(mode)) { label.classList.add("lp-vector-choice"); label.append(node("small", "lp-vector-help", embeddingAvailable() ? "已在 QMD 控制中启用 embedding；CPU 构建可能耗时较长，向量仍需按需勾选。" : "先在 QMD 控制中手动启用 embedding；原生与关键词索引仍可构建。")); }
+        if (vectorMode(mode)) { label.classList.add("lp-vector-choice"); label.append(node("small", "lp-vector-help", embeddingAvailable() ? "已在 QMD 控制中启用 embedding；CPU 构建可能耗时较长，向量仍需按需勾选。" : "先在 QMD 控制中手动启用 embedding；QMD 关键词索引仍可构建。")); }
         modeChoices.append(label);
       });
       if (!entries.length) indexes.append(node("p", "lp-help", "服务尚未返回完整索引状态；以上未报告项不表示构建成功。"));

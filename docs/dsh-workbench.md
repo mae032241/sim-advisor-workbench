@@ -1,6 +1,6 @@
 # DSH 接入工作台
 
-推荐使用完整的 `@local/sim-advisor-workbench` 插件，当前版本 **0.2.49**。构建后通过 DSH 官方插件管理器安装 `.tgz`，步骤见 [插件打包](dsh-plugin-package.md)。不要直接安装插件源码目录。DSH 与所用模型服务需自行安装、登录和配置。
+推荐使用完整的 `@local/sim-advisor-workbench` 插件，当前版本 **0.2.63**，以 [package.json](../integrations/dsh-sim-workbench/package.json) 为准。构建后通过 DSH 官方插件管理器安装 `.tgz`，步骤见 [插件打包](dsh-plugin-package.md)。不要直接安装插件源码目录。DSH 与所用模型服务需自行安装、登录和配置。
 
 ## 在当前 DSH 会话使用
 
@@ -26,7 +26,7 @@ Bridge 另提供 `bind_workbench({url})` 绑定已有方案，以及状态和解
 
 ## 资料与数据
 
-资料库全局管理，不绑定某个方案。新增库需自行提供来源，构建后手动启用。native 是默认检索；QMD 关键词可选，embedding 默认关闭，向量和语义增强只按显式选择执行。Deep API 增强需用户自备 COMSOL。
+资料库全局管理，不绑定某个方案。新增库需自行提供来源，构建后手动启用。默认使用 QMD 关键词检索，可选 QMD 向量检索默认关闭，embedding 默认关闭，向量和语义增强只按显式选择执行。Deep API 增强需用户自备 COMSOL。
 
 数据目录与插件安装目录分开。迁移前停止使用该数据目录的服务和 CLI，再完整复制数据目录并重新配置依赖和原始资料位置；插件设置中切换目录不会替用户搬迁数据。原始来源改位置可使用 `library_cli.py rebind`。
 

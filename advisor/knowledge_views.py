@@ -8,7 +8,7 @@ _DATA_FIELDS = {"feature_branch", "feature_branch_origin", "feature_type", "scop
     "objects_created", "properties_set", "operations", "api_object_paths", "references", "prerequisites", "unresolved",
     "summary", "summary_origin", "section", "tutorial_order", "instruction_count", "index_text_truncated", "source_order", "source_spans",
     "code_origin", "execution_status", "execution_order", "standalone", "workflow_history", "structure_version", "analysis_scope",
-    "coverage", "parse_warnings", "extractor_version", "origin_trust"}
+    "coverage", "parse_warnings", "extractor_version", "origin_trust", "search_context", "model_completeness"}
 _CANDIDATE_FIELDS = {"id", "object_id", "local_id", "revision_id", "case_group", "title", "kind", "type", "version", "branch", "feature_branch",
     "package", "physics", "origin", "url", "source_uri", "library_id", "asset_key", "asset_hash", "relative_path", "section_path", "parent", "children",
     "score", "status", "quality", "read_scope", "text_truncated", "evidence", "coverage", "relations"}

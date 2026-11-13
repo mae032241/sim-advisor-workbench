@@ -18,9 +18,12 @@ from .index_manifest_cache import read_manifest
 POLICY = "unreferenced-search-generations/v1"
 _GENERATION = re.compile(r"[a-f0-9]{20}-[a-f0-9]{8}\Z")
 _CORPUS_FILE = re.compile(r"o-[a-f0-9]{32}\.md\Z")
+_KEYWORD_INPUT = re.compile(r"\.qmd-keyword-inputs-[a-f0-9]{32}\.sqlite3(?:-(?:wal|shm|journal))?\Z")
+_CONTEXT_DEPENDENCIES = re.compile(r"case-context-dependencies-[a-f0-9]{64}\.sqlite3\Z")
 _REUSE = ("keyword_reused_from_directory", "vector_reused_from_directory")
 _SIDECARS = ("", "-wal", "-shm", "-journal")
-_ROOT_FILES = {"manifest.json", *("objects.sqlite3" + suffix for suffix in _SIDECARS)}
+_ROOT_FILES = {"manifest.json", "query-scope-counts.json", "query-scope-counts.json.tmp",
+               *("objects.sqlite3" + suffix for suffix in _SIDECARS)}
 _SHARED_FILES = {"qmd-keyword.sqlite3" + suffix for suffix in _SIDECARS} | {
     "qmd-keyword.progress.json", "qmd-keyword.sqlite3.progress.json"}
 _LIBRARY_FILES = {name + suffix for name in ("qmd-keyword.sqlite3", "qmd-vector.sqlite3") for suffix in _SIDECARS}
@@ -93,7 +96,8 @@ def _tree_bytes(root, directory, manifest):
                 if valid:
                     pending.append(path)
             elif stat.S_ISREG(info.st_mode):
-                valid = ((len(relative) == 1 and relative[0] in root_files)
+                valid = ((len(relative) == 1 and (relative[0] in root_files or _KEYWORD_INPUT.fullmatch(relative[0])
+                                                or _CONTEXT_DEPENDENCIES.fullmatch(relative[0])))
                          or (len(relative) == 2 and relative[0] in keys and relative[1] in _LIBRARY_FILES)
                          or (len(relative) == 3 and relative[0] in keys and relative[1] == "corpus"
                              and _CORPUS_FILE.fullmatch(relative[2])))
@@ -103,7 +107,7 @@ def _tree_bytes(root, directory, manifest):
             if not valid:
                 raise ValueError("Unrecognized entry in generated index: " + "/".join(relative))
     if not (directory / "objects.sqlite3").is_file():
-        raise ValueError("Generated native index is missing")
+        raise ValueError("Generated object metadata index is missing")
     return total
 
 

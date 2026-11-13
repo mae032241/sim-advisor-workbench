@@ -7,6 +7,7 @@ from pathlib import Path
 from advisor.config import DATA
 from advisor.knowledge import KnowledgeBase
 from advisor.library_provider import LibraryKnowledgeProvider
+from advisor.query_terms import normalize_mode
 from advisor.library_store import LibraryStore
 from advisor.model_reader import inspect_model
 
@@ -21,13 +22,29 @@ def main():
     search.add_argument("query")
     search.add_argument("--kind", choices=["all", "manual", "case", "code"], default="all")
     search.add_argument("--limit", type=int, default=8)
-    search.add_argument("--backend", choices=["native", "qmd"], help="Compatibility alias: qmd selects qmd_keyword")
-    search.add_argument("--mode", choices=["native", "qmd_keyword", "qmd_vector"])
+    search.add_argument("--backend", type=normalize_mode, choices=["qmd_keyword", "qmd_vector"], help=argparse.SUPPRESS)
+    search.add_argument("--mode", type=normalize_mode, choices=["qmd_keyword", "qmd_vector"])
     search.add_argument("--library", action="append", dest="library_ids")
     search.add_argument("--branch")
     search.add_argument("--feature-branch")
+    search.add_argument("--case-id", help="Exact case overview ID; search its prepared settings/tutorial scope")
+    search.add_argument("--stage", help="Implementation stage within --case-id")
+    cases = sub.add_parser("cases", help="QMD case discovery over model overviews only")
+    cases.add_argument("query")
+    cases.add_argument("--library", action="append", dest="library_ids")
+    cases.add_argument("--limit", type=int, default=6)
+    cases.add_argument("--include-geometry-only", action="store_true")
+    guide = sub.add_parser("case-guide", help="Prepared implementation navigation; does not count as a source read")
+    guide.add_argument("id")
+    guide.add_argument("--stage", help="Expand one implementation stage; default is a small flow overview")
     source = sub.add_parser("source")
     source.add_argument("id")
+    sub.add_parser("list", help="List current public tool definitions without opening a library or plan")
+    contract = sub.add_parser("contract", help="Read the actual tool input contract without opening a library or plan")
+    contract.add_argument("tool")
+    contract.add_argument("--path", help="JSON pointer into input data, e.g. /design_brief/simplification/candidates/0/status")
+    contract.add_argument("--offset", type=int)
+    contract.add_argument("--length", type=int)
     scope = sub.add_parser("scope", help="List lightweight library groups and current enabled state")
     scope.add_argument("--query")
     scope.add_argument("--type", choices=["official-manuals", "official-models", "user-manuals", "user-models"])
@@ -37,7 +54,17 @@ def main():
     sub.add_parser("status")
     args = parser.parse_args()
     try:
-        if args.command == "inspect":
+        if args.command in {"list", "contract"}:
+            from advisor.planning_service import tool_definitions
+            from advisor.chat_bridge_tools import external_tool_definitions
+            definitions = tool_definitions() + external_tool_definitions()
+            if args.command == "list":
+                result = {"tools": definitions}
+            else:
+                from advisor.tool_contracts import read_contract
+                arguments = {key: getattr(args, key) for key in ("tool", "path", "offset", "length") if getattr(args, key) is not None}
+                result = read_contract(definitions, arguments)
+        elif args.command == "inspect":
             result = inspect_model(args.path)
         elif args.command in {"scope", "enable-many"}:
             store = LibraryStore(args.data_dir / "libraries")
@@ -45,8 +72,15 @@ def main():
         else:
             kb = LibraryKnowledgeProvider(KnowledgeBase(args.data_dir), args.data_dir / "libraries")
             if args.command == "search":
-                mode = args.mode or ("qmd_keyword" if args.backend == "qmd" else "native")
-                result = {"results": kb.search(args.query, args.limit, args.kind, {"mode": mode, "branch": args.branch, "feature_branch": args.feature_branch, "library_ids": args.library_ids})}
+                mode = args.mode or args.backend or "qmd_keyword"
+                result = {"results": kb.search(args.query, args.limit, args.kind, {"mode": mode, "branch": args.branch, "feature_branch": args.feature_branch, "library_ids": args.library_ids, "case_id": args.case_id, "stage": args.stage})}
+            elif args.command == "cases":
+                result = {"results": kb.search_cases(args.query, library_ids=args.library_ids, limit=args.limit, include_geometry_only=args.include_geometry_only)}
+            elif args.command == "case-guide":
+                from advisor.case_guides import get_case_guide
+                from advisor.planning_service import _guide_view
+                from advisor.case_metadata import normalize_feature_branch
+                result = _guide_view(get_case_guide(kb.store, args.id), normalize_feature_branch(args.stage))
             elif args.command == "source":
                 result = kb.get_document(args.id)
                 if result is None:
@@ -55,7 +89,8 @@ def main():
                 result = kb.status()
         print(json.dumps(result, ensure_ascii=False))
     except (ValueError, OSError, RuntimeError) as exc:
-        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        payload = exc.to_dict() if callable(getattr(exc, "to_dict", None)) else {"error": str(exc)}
+        print(json.dumps(payload, ensure_ascii=False))
         return 1
     return 0
 

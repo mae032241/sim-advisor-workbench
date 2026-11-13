@@ -110,7 +110,7 @@ def main():
                         help="Keep each question's input, runs and evaluation artifacts separate")
     parser.add_argument("--exclude", action="append", default=[], help="Held-out source path or case stem; repeat for additional sources")
     parser.add_argument("--library", action="append", help="Limit retrieval to this library ID; repeat for additional libraries")
-    parser.add_argument("--retrieval-mode", choices=("native", "qmd_keyword", "qmd_vector"), default="native")
+    parser.add_argument("--retrieval-mode", choices=("qmd_keyword", "qmd_vector"), default="qmd_keyword")
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--session-id", help="Repeat planning for the same public test input without user answers")
     args = parser.parse_args()
@@ -153,7 +153,7 @@ def main():
               "scenario_sha256": hashlib.sha256(args.scenario.read_bytes()).hexdigest(),
               "public_goal_sha256": fingerprint(goal),
               "input_assertions": clean, "public_input": str(challenge / "public-input.json"),
-              "knowledge_policy": {"modern": args.retrieval_mode, "legacy_manuals": "native", "library_ids": args.library,
+              "knowledge_policy": {"modern": args.retrieval_mode, "legacy_manuals": "disabled", "library_ids": args.library,
                                    "held_out_source_families": args.exclude},
               "physical_solution": "not_run", "user_answers_injected": False,
               "preview_url": f"http://127.0.0.1:49268/?session={session['id']}"}

@@ -375,7 +375,7 @@ def compile_registry(catalog_path, sets, *, on_progress=None, previous_registry=
                 if item.get("asset_key"):
                     keys.add((owner, item["asset_key"]))
                 object_document_paths(item)
-                from .native_index import qmd_path
+                from .object_index import qmd_path
                 paths.add(qmd_path({"id": identity, "library_id": owner}))
             count += 1
             if on_progress and count % 10000 == 0:
@@ -385,7 +385,7 @@ def compile_registry(catalog_path, sets, *, on_progress=None, previous_registry=
         db.executemany("INSERT OR IGNORE INTO heldout_sources VALUES(?)", ((identity,) for identity in citations))
         db.execute("CREATE TEMP TABLE heldout_objects(id TEXT PRIMARY KEY)")
         db.executemany("INSERT INTO heldout_objects VALUES(?)", ((identity,) for identity in objects))
-        from .native_index import qmd_path
+        from .object_index import qmd_path
         for identity, owner in db.execute("SELECT id,library_id FROM revisions WHERE object_id IN (SELECT id FROM heldout_objects)"):
             citations.add(identity)
             paths.add(qmd_path({"id": identity, "library_id": owner}))

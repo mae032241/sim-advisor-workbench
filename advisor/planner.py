@@ -147,11 +147,15 @@ _STR = {"type": "string"}
 _STRINGS = {"type": "array", "items": _STR}
 _STEP_PROPERTIES = {key: (_STRINGS if key in {"inputs", "depends_on", "source_ids", "checks"} else _STR)
                     for key in ("id", "title", "purpose", "action", "location", "selection", "inputs", "depends_on", "source_ids", "checks", "difficulty")}
+_STEP_PROPERTIES["id"] = {"type": "string", "minLength": 1,
+                          "description": "方案内唯一步骤ID；depends_on只允许前序步骤ID。"}
 PLAN_SCHEMA = {"type": "object", "additionalProperties": False,
                "properties": {"title": _STR, "summary": _STR, "assumptions": _STRINGS,
-                              "steps": {"type": "array", "items": {"type": "object", "properties": _STEP_PROPERTIES, "required": list(_STEP_PROPERTIES), "additionalProperties": False}},
+                              "steps": {"type": "array", "minItems": 1, "maxItems": 24, "items": {"type": "object", "properties": _STEP_PROPERTIES, "required": list(_STEP_PROPERTIES), "additionalProperties": False}},
                               "difficulties": _STRINGS, "missing_information": _STRINGS, "evidence_status": _STR},
                "required": ["title", "summary", "assumptions", "steps", "difficulties", "missing_information", "evidence_status"]}
+for _name in ("title", "summary", "evidence_status"):
+    PLAN_SCHEMA["properties"][_name] = {"type": "string", "minLength": 1, "pattern": r"\S"}
 
 
 def validate_agent_plan(plan: dict, sources: list[dict]) -> dict:

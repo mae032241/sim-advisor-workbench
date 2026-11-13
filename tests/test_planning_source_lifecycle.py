@@ -192,7 +192,9 @@ def test_closed_official_manual_roots_block_legacy_search_and_new_reads_for_ever
     provider = LibraryKnowledgeProvider(kb, store.root)
     closed = source_id("com.comsol.help.closed_part/closed-0.html")
     opened = source_id("com.comsol.help.closedXpart/open.html")
-    assert [hit["id"] for hit in provider.search("mesh sizing")] == [opened]
+    # Unregistered archives remain readable by known ID, but the retired
+    # engine no longer contributes search candidates to registered QMD.
+    assert provider.search("mesh sizing") == []
     assert not provider.source_available(closed)
     assert provider.source_available(opened)
     sessions = SessionStore(store.root.parent, provider, FakePlanner()); plan = sessions.create(GOAL, None)
