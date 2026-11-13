@@ -565,8 +565,10 @@ state.navPreference = storedPreference("simAdvisor.nav", "");
 function setSidePanel(open) {
   state.sidePanelOpen = Boolean(open); storePreference("simAdvisor.sidePanel", open ? "open" : "closed");
   $("workbench")?.classList.toggle("side-collapsed", !state.sidePanelOpen);
-  if ($("workbench-side")) $("workbench-side").hidden = !state.sidePanelOpen;
-  sideTabs.forEach((tab) => $("tab-" + tab)?.setAttribute("aria-expanded", String(state.sidePanelOpen && state.tab === tab)));
+  const toggle = $("side-toggle"); if (!toggle) return;
+  const label = state.sidePanelOpen ? "收起右侧面板" : "展开右侧面板";
+  toggle.setAttribute("aria-expanded", String(state.sidePanelOpen)); toggle.setAttribute("aria-label", label); toggle.title = label;
+  const mark = toggle.querySelector?.("[aria-hidden]"); if (mark) mark.textContent = state.sidePanelOpen ? "»" : "«";
 }
 // Left navigation: the user's explicit choice wins; until they make one it folds while a plan is open.
 function navCompact() { return state.navPreference ? state.navPreference === "compact" : Boolean(state.session); }
@@ -1438,6 +1440,7 @@ document.querySelectorAll("[data-close]").forEach((button) => button.addEventLis
 if (typeof HTMLDialogElement === "undefined" || !("closedBy" in HTMLDialogElement.prototype)) document.querySelectorAll(".modal").forEach((dialog) => { dialog.addEventListener("click", (event) => { if (event.target !== dialog || dialog.id === "session-delete-dialog" && state.sessionDeletion?.submitting || dialog.id === "session-purge-dialog" && state.sessionPurge?.submitting) return; const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); }); });
 const tabs = sideTabs;
 $("nav-toggle")?.addEventListener("click", toggleNav);
+$("side-toggle")?.addEventListener("click", () => setSidePanel(!state.sidePanelOpen));
 syncNav();
 const sessionMenu = $("session-menu"), sessionMenuButton = $("session-menu-button");
 if (sessionMenu?.showPopover) {
@@ -1446,7 +1449,7 @@ if (sessionMenu?.showPopover) {
   window.addEventListener("scroll", () => { if (sessionMenu.matches(":popover-open")) sessionMenu.hidePopover(); }, { passive: true });
 }
 if (window.ResizeObserver && $("workbench-header")) new ResizeObserver(([entry]) => $("workbench").style.setProperty("--workbench-header", `${Math.ceil(entry.target.getBoundingClientRect().height)}px`)).observe($("workbench-header"));
-tabs.forEach((tab, index) => { const button = $("tab-" + tab); button.addEventListener("click", () => (state.tab === tab && state.sidePanelOpen) ? setSidePanel(false) : selectTab(tab)); button.addEventListener("keydown", (event) => { let next; if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length]; if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length]; if (event.key === "Home") next = tabs[0]; if (event.key === "End") next = tabs[tabs.length - 1]; if (next) { event.preventDefault(); selectTab(next, true); } }); });
+tabs.forEach((tab, index) => { const button = $("tab-" + tab); button.addEventListener("click", () => selectTab(tab)); button.addEventListener("keydown", (event) => { let next; if (event.key === "ArrowRight") next = tabs[(index + 1) % tabs.length]; if (event.key === "ArrowLeft") next = tabs[(index + tabs.length - 1) % tabs.length]; if (event.key === "Home") next = tabs[0]; if (event.key === "End") next = tabs[tabs.length - 1]; if (next) { event.preventDefault(); selectTab(next, true); } }); });
 window.addEventListener("beforeunload", (event) => { if (state.dirty || ["create", "refine", "answers", "upload"].includes(state.operation) || state.indexBusy) { event.preventDefault(); event.returnValue = ""; } });
 window.addEventListener("pagehide", () => { apiControllers.forEach((controller) => controller.abort()); });
 const libraryManagement = $("library-management");

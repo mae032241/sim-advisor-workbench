@@ -99,15 +99,7 @@
                 <p id="plan-engine" class="menu-note"></p>
               </div>
             </div>
-            <div class="workbench-subbar">
-              <ol id="stage-bar" class="stage-bar" aria-label="任务进度"></ol>
-              <div class="tabs side-tabs panel-nav" role="tablist" aria-label="右侧面板">
-                <button id="tab-intent" class="tab active" role="tab" aria-selected="true" aria-controls="view-intent" type="button" data-tab="intent">待确认 <span id="question-count" class="tab-count">0</span></button>
-                <button id="tab-agent" class="tab" role="tab" aria-selected="false" aria-controls="view-agent" tabindex="-1" type="button" data-tab="agent">Agent</button>
-                <button id="tab-sources" class="tab" role="tab" aria-selected="false" aria-controls="view-sources" tabindex="-1" type="button" data-tab="sources">来源 <span id="source-count" class="tab-count tab-count-neutral">0</span></button>
-                <button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history">记录</button>
-              </div>
-            </div>
+            <ol id="stage-bar" class="stage-bar" aria-label="任务进度"></ol>
           </header>
           <div class="workbench-body">
             <div class="workbench-main">
@@ -115,6 +107,15 @@
               <section id="view-plan" class="plan-main" aria-label="方案内容"><div id="plan-content"></div></section>
             </div>
             <aside class="workbench-side" id="workbench-side" aria-label="需要处理的事项">
+              <div class="side-header">
+                <div class="tabs side-tabs" role="tablist" aria-label="待办、对话与记录">
+                  <button id="tab-intent" class="tab active" role="tab" aria-selected="true" aria-controls="view-intent" type="button" data-tab="intent" title="待确认"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l2 2 4-4"/><rect x="4" y="4" width="16" height="16" rx="3"/></svg><span class="tab-label">待确认</span> <span id="question-count" class="tab-count">0</span></button>
+                  <button id="tab-agent" class="tab" role="tab" aria-selected="false" aria-controls="view-agent" tabindex="-1" type="button" data-tab="agent" title="Agent 对话"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 18l-1 3 4-2h9a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v8a3 3 0 0 0 1 3z"/></svg><span class="tab-label">Agent</span></button>
+                  <button id="tab-sources" class="tab" role="tab" aria-selected="false" aria-controls="view-sources" tabindex="-1" type="button" data-tab="sources" title="引用来源"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/></svg><span class="tab-label">来源</span> <span id="source-count" class="tab-count tab-count-neutral">0</span></button>
+                  <button id="tab-history" class="tab" role="tab" aria-selected="false" aria-controls="view-history" tabindex="-1" type="button" data-tab="history" title="研究与版本记录"><svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="tab-label">记录</span></button>
+                </div>
+                <button id="side-toggle" class="side-toggle" type="button" aria-controls="workbench-side" aria-expanded="true" aria-label="收起右侧面板" title="收起右侧面板"><span aria-hidden="true">»</span></button>
+              </div>
               <section id="view-intent" class="tab-view side-view" role="tabpanel" aria-labelledby="tab-intent">
                 <form id="intent-form">
                   <p class="side-intro"><span id="intent-progress" class="badge badge-neutral"></span> Agent 根据目标和几何提出的问题。回答改变工况或路线时，需要让 Agent 更新方案后再确认。</p>
