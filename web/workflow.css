@@ -500,3 +500,20 @@ input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea 
 .trace-gaps { color: var(--amber); }
 .trace-raw > summary { font-size: var(--fs-xs); }
 .trace-raw .raw-snapshot { font-size: var(--fs-xs); max-height: 240px; overflow: auto; }
+
+/* Inside a plan, inputs are read-only reference beside the summary; the intake form is for new tasks only */
+body.has-session .plan-workspace > .task-inputs { display: none; }
+.session-inputs { border: 1px solid var(--line); border-radius: 8px; background: var(--white); }
+.session-inputs > summary { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; cursor: pointer; list-style: none; }
+.session-inputs > summary::-webkit-details-marker { display: none; }
+.session-inputs > summary::after { content: "展开"; margin-left: auto; font-size: var(--fs-xs); color: var(--teal-dark); }
+.session-inputs[open] > summary::after { content: "收起"; }
+.session-inputs-title { font-size: var(--fs-s); font-weight: 600; color: var(--ink); }
+.session-inputs-hint { font-size: var(--fs-xs); color: var(--ink-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-inputs-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 24px; padding: 4px 14px 14px; border-top: 1px solid var(--line); }
+.session-inputs-body h4 { font-size: var(--fs-xs); font-weight: 500; color: var(--ink-3); margin: 10px 0 6px; }
+.session-inputs-goal p { margin: 0; font-size: var(--fs-m); color: var(--ink-2); line-height: 1.75; white-space: pre-wrap; }
+.session-inputs-model .model-content { min-height: 0; padding: 0; }
+.session-inputs-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.session-inputs-actions p { margin: 0; font-size: var(--fs-xs); color: var(--ink-3); flex: 1 1 260px; }
+@media (max-width: 760px) { .session-inputs-body { grid-template-columns: minmax(0, 1fr); } }

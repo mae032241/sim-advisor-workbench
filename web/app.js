@@ -492,13 +492,13 @@ function emptyModel() {
   const text = el("p", "", "读取 STEP 后展示几何事实，再由 Agent 研究需要建立的物理模型。");
   wrap.append(text, el("span", "empty-caption", ".stp / .step 几何 · 也支持已有 .mph 模型")); return wrap;
 }
-function renderModel() {
-  const container = $("model-content"), model = state.model;
+function renderModel(container = $("model-content"), model = state.model, intake = true) {
+  if (!container) return;
   if (!state.meshArt) { const svg = container.querySelector("svg"); if (svg) state.meshArt = svg.cloneNode(true); }
   container.replaceChildren();
-  if (!model) { $("model-badge").textContent = "等待读取"; $("model-badge").className = "badge badge-neutral"; container.append(emptyModel()); return; }
+  if (!model) { (intake ? $("model-badge") : {}).textContent = "等待读取"; (intake ? $("model-badge") : {}).className = "badge badge-neutral"; container.append(emptyModel()); return; }
   const cad = isGeometry(model);
-  $("model-badge").textContent = cad ? "几何已读取" : "已只读解析"; $("model-badge").className = "badge badge-good";
+  (intake ? $("model-badge") : {}).textContent = cad ? "几何已读取" : "已只读解析"; (intake ? $("model-badge") : {}).className = "badge badge-good";
   const fileHeading = el("div", "model-file-heading"), title = el("div");
   title.append(el("h3", "", model.file_name || "输入快照"), el("p", "", `${cad ? "STEP 几何" : `COMSOL ${model.version || "版本未知"}`} · ${model.parser || "解析方式未报告"}`));
   fileHeading.append(el("span", "file-icon", cad ? "STEP" : "MPH"), title); container.append(fileHeading);
@@ -834,7 +834,22 @@ function renderOverview(container) {
   fact("几何", session?.model ? (session.model.name || session.model.path || "").split(/[\\/]/).pop() : "");
   if (hasAgentPlan()) fact("依据", list(session?.sources).length ? `${list(session.sources).length} 个来源` : "暂无引用来源");
   if (facts.childElementCount) section.append(facts);
+  section.append(renderSessionInputs(session));
   container.append(section); state.overviewNodes = {}; syncOverview();
+}
+function renderSessionInputs(session) {
+  const inputs = el("details", "session-inputs"), summary = el("summary"), model = session?.model;
+  summary.append(el("span", "session-inputs-title", "任务输入"), el("span", "session-inputs-hint", [model ? (model.file_name || "已读取模型") : "未附几何", "你的原始描述"].join(" · ")));
+  const body = el("div", "session-inputs-body"), goal = el("section", "session-inputs-goal");
+  goal.append(el("h4", "", "你的原始描述"), el("p", "", session?.goal || "未记录"));
+  const geometry = el("section", "session-inputs-model"); geometry.append(el("h4", "", "几何与模型"));
+  const modelBox = el("div", "model-content"); geometry.append(modelBox);
+  if (model) renderModel(modelBox, model, false); else modelBox.append(el("p", "inline-empty", "建立任务时没有附几何或模型文件。"));
+  const actions = el("div", "session-inputs-actions"), fork = el("button", "button button-subtle", "以此为基础新建任务"); fork.type = "button";
+  fork.addEventListener("click", () => { const goalText = session?.goal || "", path = session?.model?.path || ""; newSession(); if (state.session) return; $("goal").value = goalText; $("model-path").value = path; $("goal").focus(); });
+  actions.append(fork, el("p", "", "已建立的任务不能直接修改目标或几何。需要改动时，复制这些输入新建一个任务，原方案保留不变。"));
+  body.append(goal, geometry, actions); inputs.append(summary, body);
+  return inputs;
 }
 function syncOverview() { syncWorkflow(); }
 function workflowState(session = state.session) {
