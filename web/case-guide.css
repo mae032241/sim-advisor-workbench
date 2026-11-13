@@ -1,11 +1,11 @@
 .case-guide { margin: 24px 0; padding-top: 18px; border-top: 1px solid var(--border, #dce4dd); }
 .case-guide-flow { list-style: none; padding: 0; margin: 20px 0; counter-reset: case-step; }
 .case-guide-step { position: relative; padding: 0 0 16px 34px; counter-increment: case-step; }
-.case-guide-step::before { content: counter(case-step); position: absolute; left: 0; top: 14px; width: 24px; height: 24px; border-radius: 50%; background: #e4eee8; color: #275348; text-align: center; font-size: 13px; line-height: 24px; z-index: 1; }
+.case-guide-step::before { content: counter(case-step); position: absolute; left: 0; top: 14px; width: 24px; height: 24px; border-radius: 50%; background: #e4eee8; color: #275348; text-align: center; font-size:.8125rem; line-height: 24px; z-index: 1; }
 .case-guide-step:not(:last-child)::after { content: ""; position: absolute; top: 36px; bottom: -15px; left: 11px; border-left: 1px solid #c9d9cf; }
 .case-guide-node { border: 1px solid #dce4dd; border-radius: 10px; background: #fff; overflow: hidden; }
 .case-guide-node > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 14px; cursor: pointer; }
-.case-guide-node > summary::before { content: "▸"; color: #6c8275; }
+.case-guide-node > summary::before { content: "▸"; color: #5d746b; }
 .case-guide-node[open] > summary::before { content: "▾"; }
 .case-guide-node > summary .small-label { margin-left: auto; }
 .case-guide-mesh { border-color: #8aad97; }
@@ -17,5 +17,5 @@
 .case-guide-check { padding: 10px; background: #f0f6f2; border-radius: 6px; }
 .case-guide-gaps, .case-guide-extra { margin-top: 12px; }
 .case-guide-gaps > summary, .case-guide-extra > summary, .case-guide-configuration > summary { cursor: pointer; padding: 8px 0; }
-.case-guide-config-data { max-height: 380px; overflow: auto; padding: 12px; background: #f5f7f5; white-space: pre-wrap; font-size: 12px; }
+.case-guide-config-data { max-height: 380px; overflow: auto; padding: 12px; background: #f5f7f5; white-space: pre-wrap; font-size:.75rem; }
 @media (max-width: 560px) { .case-guide-step { padding-left: 28px; } .case-guide-node > summary { padding: 10px; } .case-guide-node > summary .small-label { margin-left: 0; } }

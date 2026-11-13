@@ -1341,7 +1341,8 @@ $("source-technical").addEventListener("toggle", renderSourceTechnical);
 $("search-dialog").addEventListener("close", () => { searchRequest++; sourceSearch?.abort(); sourceSearch = null; $("search-submit").disabled = false; });
 $("build-index").addEventListener("click", buildIndex);
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
-document.querySelectorAll(".modal").forEach((dialog) => { dialog.addEventListener("click", (event) => { if (event.target !== dialog || dialog.id === "session-delete-dialog" && state.sessionDeletion?.submitting || dialog.id === "session-purge-dialog" && state.sessionPurge?.submitting) return; const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); }); });
+// Native closedby="any" light-dismiss routes through each dialog's cancel handler; this is the fallback for older browsers.
+if (typeof HTMLDialogElement === "undefined" || !("closedBy" in HTMLDialogElement.prototype)) document.querySelectorAll(".modal").forEach((dialog) => { dialog.addEventListener("click", (event) => { if (event.target !== dialog || dialog.id === "session-delete-dialog" && state.sessionDeletion?.submitting || dialog.id === "session-purge-dialog" && state.sessionPurge?.submitting) return; const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); }); });
 const tabs = sideTabs;
 const sessionMenu = $("session-menu"), sessionMenuButton = $("session-menu-button");
 if (sessionMenu?.showPopover) {
