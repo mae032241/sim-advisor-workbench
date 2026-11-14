@@ -32,7 +32,7 @@ const requestURL = path => new URL(path, 'http://localhost:49268');
 const endpoint = path => requestURL(path).pathname;
 
 function fixture(response) {
-  let serial = 0, now = 0; const timers = new Map(), calls = [], document = {activeElement: null, createElement: tag => new Node(tag)}, host = new Node('section'); host.id = 'agent-panel';
+  let serial = 0, now = 0; const timers = new Map(), calls = [], listeners = new Map(), document = {activeElement: null, visibilityState: 'visible', createElement: tag => new Node(tag), addEventListener(type, listener) { listeners.set(type, listener); }, removeEventListener(type) { listeners.delete(type); }, dispatch(type) { listeners.get(type)?.(); }}, host = new Node('section'); host.id = 'agent-panel';
   const current = {session: {id: 'A', revision: 1}};
   const window = {location: {href: 'http://localhost:49268/?session=A'}, addEventListener() {}};
   vm.runInNewContext(script, {window, document, URL, URLSearchParams, AbortController,
@@ -60,7 +60,7 @@ test('status polling waits for the response and reuses unchanged chat DOM and fo
   const f = fixture(() => pending); await flush();
   assert.equal(f.calls.length, 1); assert.equal([...f.timers.values()].some(timer => timer.delay === 2000), false);
   await f.tick(); await f.tick(); assert.equal(f.calls.length, 1, 'An unresolved response does not schedule another poll');
-  release(unbound); await flush();
+  release({...unbound, connected: true, status: 'running'}); await flush();
   const history = f.get('agent-message-history'), initial = history.children[0], input = find(f.host, node => node.tagName === 'TEXTAREA');
   input.value = 'still editing'; f.document.activeElement = input;
   await f.tick();
@@ -217,5 +217,36 @@ test('real heartbeat and connection changes still update their text and controls
   await f.tick();
   assert.notEqual(note.textNode, first); assert.equal(Node.writes.filter(write => write.property === 'textContent').length, 1);
   await f.tick(); assert.match(f.get('agent-panel-status').textContent, /心跳失联/); assert.match(note.textContent, /已超时/);
+  f.panel.destroy();
+});
+
+test('a hidden tab stops polling and catches up immediately when shown again', async () => {
+  const f = fixture(() => ({...unbound, connected: true, status: 'running'})); await flush();
+  assert.equal(f.calls.length, 1);
+  f.document.visibilityState = 'hidden';
+  await f.tick(); assert.equal(f.calls.length, 1, 'the poll due while hidden is skipped');
+  await f.tick(20000); assert.equal(f.calls.length, 1, 'no polling continues in the background');
+  assert.equal(f.timers.size, 0);
+  f.document.visibilityState = 'visible'; f.document.dispatch('visibilitychange'); await flush();
+  assert.equal(f.calls.length, 2, 'becoming visible polls at once');
+  await f.tick(); assert.equal(f.calls.length, 3, 'normal cadence resumes');
+  f.panel.destroy(); f.document.dispatch('visibilitychange'); await flush();
+  assert.equal(f.calls.length, 3, 'a destroyed panel no longer reacts to visibility');
+});
+
+test('an idle plan (no Agent connected or bound) polls once, then only on focus or becoming visible', async () => {
+  const f = fixture(() => unbound); await flush();
+  assert.equal(f.calls.length, 1);
+  await f.tick(60000); assert.equal(f.calls.length, 1, 'no timer-driven polling while idle');
+  assert.equal(f.timers.size, 0);
+  f.document.dispatch('visibilitychange'); await flush();
+  assert.equal(f.calls.length, 2, 'becoming visible checks once');
+  await f.tick(60000); assert.equal(f.calls.length, 2);
+  f.panel.destroy();
+});
+
+test('a bound external Agent keeps the 2-second cadence even while its heartbeat is down', async () => {
+  const f = fixture(() => ({...unbound, external: {registered: true, alive: false, offline_reason: 'heartbeat'}})); await flush();
+  await f.tick(); await f.tick(); assert.equal(f.calls.length, 3);
   f.panel.destroy();
 });

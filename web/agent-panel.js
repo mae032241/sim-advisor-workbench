@@ -242,15 +242,21 @@ window.SimAdvisorAgentPanel = (() => {
       } catch (error) { if (token === epoch && error.name !== "AbortError") { if (preserveDrafts) commandError = error.message; else localError = error.message; } }
       finally { controllers.delete(controller); if (token === epoch) { refreshingPlan = false; render(); } }
     }
+    // Poll on a timer only while something can change on its own: a connected or running Agent, a bound
+    // external Agent, or a plan update waiting to load. Idle pages check when opened, focused or shown.
+    function live() {
+      return Boolean(snapshot?.connected || ["starting", "running"].includes(snapshot?.status) || snapshot?.external?.registered || pendingRevision != null);
+    }
+    function pageHidden() { return typeof document !== "undefined" && document.visibilityState === "hidden"; }
     async function poll(token = epoch) {
       const serial = ++pollSerial;
       clearTimeout(timer);
-      if (!current() || commandPending) return;
+      if (!current() || commandPending || pageHidden()) return;
       try {
         const result = await request("", undefined, token);
         if (result && token === epoch && serial === pollSerial) { mergeMessages(result); applySettings(result); snapshot = result; localError = ""; rememberRevision(); render(); await readPlan(token); }
       } catch (error) { if (token === epoch && serial === pollSerial && error.name !== "AbortError") { localError = error.message; render(); } }
-      finally { if (token === epoch && serial === pollSerial && current()) timer = setTimeout(() => poll(token), 2000); }
+      finally { if (token === epoch && serial === pollSerial && current() && !pageHidden() && (live() || !snapshot)) timer = setTimeout(() => poll(token), 2000); }
     }
     async function command(action, body = {}, messageText = null) {
       if (!current() || commandPending || busy()) return false;
@@ -311,10 +317,13 @@ window.SimAdvisorAgentPanel = (() => {
     input.addEventListener("input", () => { if (sessionId) drafts.set(sessionId, input.value); render(); });
     input.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); form.requestSubmit(); } });
     form.addEventListener("submit", async (event) => { event.preventDefault(); const text = input.value.trim(); if (text) await command("message", { text }, text); });
-    function destroy() { destroyed = true; epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear(); }
+    let lastWake = 0;
+    function onVisibility() { if (pageHidden() || !sessionId || commandPending || Date.now() - lastWake < 1000) return; lastWake = Date.now(); poll(); }
+    function destroy() { destroyed = true; epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear(); document.removeEventListener?.("visibilitychange", onVisibility); window.removeEventListener?.("focus", onVisibility); }
+    document.addEventListener?.("visibilitychange", onVisibility); window.addEventListener?.("focus", onVisibility);
     window.addEventListener("pagehide", destroy, { once: true });
     bindSession();
-    return { bindSession, refresh: () => poll(), sendTask: (text) => command("message", { text: String(text) }), destroy };
+    return { bindSession, refresh: () => poll(), loadUpdate: () => readPlan(epoch, dirty()), sendTask: (text) => command("message", { text: String(text) }), destroy };
   }
   return { mount };
 })();

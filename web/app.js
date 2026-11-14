@@ -119,7 +119,10 @@ async function runOperation(operation, title, detail, action) {
   notice("");
   setBusy(operation, title, detail);
   try { await action(); }
-  catch (error) { if (error.name !== "AbortError") notice(errorMessage(error), true); }
+  catch (error) {
+    if (error.status === 409 && state.session && /版本已变化/.test(errorMessage(error))) { notice("方案已在别处更新（Agent、工具或另一个窗口）。页面上未保存的回答仍保留；请先「载入更新的方案」再操作，不要刷新浏览器。", true); agentPanel?.refresh?.(); }
+    else if (error.name !== "AbortError") notice(errorMessage(error), true);
+  }
   finally { setBusy(null); }
 }
 
@@ -894,7 +897,8 @@ function syncWorkflow() {
     { label: "导出", done: false }];
   const refine = $("refine-plan");
   let label, run, disabled = Boolean(state.operation), hint = "";
-  if (flow.agentBusy) { label = "Agent 处理中…"; disabled = true; run = null; hint = "可在 Agent 标签中补充说明"; }
+  if (state.agent?.updateAvailable || state.agent?.refreshingPlan) { label = state.agent?.refreshingPlan ? "正在载入更新…" : "载入更新的方案"; run = () => agentPanel?.loadUpdate?.(); disabled = Boolean(state.agent?.refreshingPlan) || Boolean(state.operation); hint = state.dirty ? "未保存的回答会保留并与新版本合并" : "方案已在别处更新，载入后再核对与确认"; }
+  else if (flow.agentBusy) { label = "Agent 处理中…"; disabled = true; run = null; hint = "可在 Agent 标签中补充说明"; }
   else if (!flow.planned) { label = agentActionLabel(); run = () => refine.click(); disabled = refine.disabled; hint = refine.title; }
   else if (state.dirty) { label = "保存回答"; run = () => $("intent-form").requestSubmit(); disabled = $("save-answers").disabled; }
   else if (flow.unresolved.length) { label = `回答 ${flow.unresolved.length} 个必填问题`; run = () => revealQuestion(flow.unresolved[0].id); disabled = false; }

@@ -99,6 +99,14 @@ def handler_for(app: App):
     class Handler(BaseHTTPRequestHandler):
         server_version = "SimAdvisor/0.1"
 
+        def log_request(self, code="-", size="-"):
+            # Successful background polls (agent updates, health) would flood the console every few seconds.
+            try: status = int(code)
+            except (TypeError, ValueError): status = 0
+            if self.command == "GET" and status < 400 and (self.path.startswith("/api/health") or re.fullmatch(r"/api/sessions/[a-f0-9]{32}/agent\?.*", self.path)):
+                return
+            super().log_request(code, size)
+
         def log_message(self, fmt, *args):
             # Log routes/status only. Never log request payloads, model details or agent output.
             print("[http] " + fmt % args, flush=True)
