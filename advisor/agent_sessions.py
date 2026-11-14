@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from collections import deque
 from pathlib import Path
@@ -60,6 +61,14 @@ class AgentSessions:
         self.entries = {}
         self.lock = threading.RLock()
         self.stopping = threading.Event()
+        # Long-poll wakeups: bumped on chat/state changes, binding saves and plan saves.
+        # Waiters re-read status on each bump and at least every WAIT_RECHECK seconds.
+        self.changed = threading.Condition()
+        self.change_count = 0
+        self.external.on_change = self.notify_change
+        listeners = getattr(sessions, "listeners", None)
+        if isinstance(listeners, list):
+            listeners.append(self.notify_change)
         self.monitor = threading.Thread(target=self._monitor, daemon=True)
         self.monitor.start()
 
@@ -123,6 +132,42 @@ class AgentSessions:
 
     def _persist(self, sid, entry):
         write_json(self.directory / (sid + ".json"), entry["record"])
+        self.notify_change(sid)
+
+    def notify_change(self, _sid=None):
+        with self.changed:
+            self.change_count += 1
+            self.changed.notify_all()
+
+    WAIT_LIMIT = 30.0
+    WAIT_RECHECK = 1.0
+    # Fields that change without any user-visible change (heartbeats) stay out of the token.
+    _VOLATILE = {("external", "last_seen")}
+
+    @classmethod
+    def state_token(cls, result):
+        stable = {key: value for key, value in result.items() if key != "state_token"}
+        for parent, key in cls._VOLATILE:
+            if isinstance(stable.get(parent), dict) and key in stable[parent]:
+                stable[parent] = {k: v for k, v in stable[parent].items() if k != key}
+        encoded = json.dumps(stable, sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
+
+    def wait_status(self, sid, *, after, known=None, wait=0.0):
+        """Updates-view status that, when the caller's token is still current, waits up to
+        `wait` seconds for a visible change instead of answering with the same state."""
+        deadline = time.monotonic() + max(0.0, min(float(wait), self.WAIT_LIMIT))
+        while True:
+            with self.changed:
+                seen = self.change_count
+            result = self.status(sid, after=after)
+            result["state_token"] = token = self.state_token(result)
+            remaining = deadline - time.monotonic()
+            if not known or token != known or remaining <= 0 or self.stopping.is_set():
+                return result
+            with self.changed:
+                if self.change_count == seen:
+                    self.changed.wait(min(remaining, self.WAIT_RECHECK))
 
     def _factory_for(self, backend):
         current_key = managed_backend_key(self.runtime_factory)
@@ -450,6 +495,7 @@ class AgentSessions:
                     self._persist(sid, entry)
             elif kind == "tool":
                 entry["activity"] = event.get("name", "正在使用工具")
+                self.notify_change(sid)
             elif kind == "error":
                 message = str(event.get("message") or "Agent 本轮执行未完成；已保存的方案保留，可继续对话。")[:500]
                 metadata = {key: event[key] for key in ("code", "category", "will_retry", "turn_id", "http_status") if key in event}
@@ -592,6 +638,7 @@ class AgentSessions:
 
     def close(self):
         self.stopping.set()
+        self.notify_change()
         for sid in list(self.entries):
             try:
                 self.disconnect(sid)

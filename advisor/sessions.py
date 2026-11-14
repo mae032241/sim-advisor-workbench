@@ -45,6 +45,8 @@ class SessionStore:
         self.kb = kb
         self.planner = planner
         self.lock = threading.RLock()
+        # Called with the session ID after each saved plan revision (long-poll wakeups).
+        self.listeners = []
 
     def _owned_path(self, path: Path) -> Path:
         if not path.is_relative_to(self.paths.root) or not path.resolve().is_relative_to(self.paths.root):
@@ -382,6 +384,11 @@ class SessionStore:
                 self._archive(current)
             stored = dict(value, model=self.paths.model_snapshot(value.get("model"), encode=True))
             write_json(path, stored)
+        for listener in list(self.listeners):
+            try:
+                listener(value["id"])
+            except Exception:
+                pass  # A wakeup hint must never fail a save.
 
     def _write_guard(self, value, *, include_current=False, allow_create=False):
         path = self.path(value["id"])

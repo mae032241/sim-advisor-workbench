@@ -404,7 +404,16 @@ def handler_for(app: App):
                 updates_view = query.get("view", [""])[0] == "updates"
                 after = query.get("after", ["new"])[0]
                 if method == "GET" and action is None:
-                    return self.respond(app.agents.status(session_id, after=after) if updates_view else app.agents.status(session_id))
+                    if not updates_view:
+                        return self.respond(app.agents.status(session_id))
+                    try:
+                        wait = float(query.get("wait", ["0"])[0])
+                    except ValueError:
+                        wait = 0.0
+                    wait = wait if 0 <= wait <= app.agents.WAIT_LIMIT else 0.0
+                    known = query.get("known", [""])[0]
+                    known = known if re.fullmatch(r"[a-f0-9]{24}", known) else None
+                    return self.respond(app.agents.wait_status(session_id, after=after, known=known, wait=wait))
                 if method == "POST" and action:
                     if updates_view:
                         app.agents.chat_updates(session_id, after)  # Validate cursor before mutation.

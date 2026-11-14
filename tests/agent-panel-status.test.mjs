@@ -250,3 +250,47 @@ test('a bound external Agent keeps the 2-second cadence even while its heartbeat
   await f.tick(); await f.tick(); assert.equal(f.calls.length, 3);
   f.panel.destroy();
 });
+
+test('a live Agent long-polls with the last state token and re-requests at once instead of every 2 seconds', async () => {
+  let hold = null; const tokens = ['a'.repeat(24), 'b'.repeat(24)];
+  const f = fixture((path) => {
+    const url = requestURL(path);
+    if (url.searchParams.get('wait')) return new Promise(resolve => { hold = () => resolve({...unbound, connected: true, status: 'idle', connection_mode: 'managed', state_token: tokens[1]}); });
+    return {...unbound, connected: true, status: 'idle', connection_mode: 'managed', state_token: tokens[0]};
+  }); await flush();
+  assert.equal(f.calls.length, 1); assert.equal(requestURL(f.calls[0].path).searchParams.get('wait'), null, 'the first read answers at once');
+  await f.tick(300);
+  assert.equal(f.calls.length, 2, 'the next request follows within the floor delay, not 2 seconds');
+  const held = requestURL(f.calls[1].path);
+  assert.equal(held.searchParams.get('wait'), '25'); assert.equal(held.searchParams.get('known'), tokens[0]);
+  assert.ok([...f.timers.values()].some(timer => timer.delay === 40000), 'the client deadline covers the server wait');
+  await f.tick(20000); assert.equal(f.calls.length, 2, 'no extra requests while one is held');
+  hold(); await flush(); await f.tick(300);
+  assert.equal(f.calls.length, 3); assert.equal(requestURL(f.calls[2].path).searchParams.get('known'), tokens[1], 'the new token is sent back');
+  f.panel.destroy();
+});
+
+test('hiding the tab releases a held long poll and showing it reconnects', async () => {
+  const f = fixture((path) => requestURL(path).searchParams.get('wait') ? new Promise(() => {}) : {...unbound, connected: true, status: 'running', state_token: 'c'.repeat(24)}); await flush();
+  await f.tick(300); assert.equal(f.calls.length, 2);
+  const signal = f.calls[1].settings.signal; assert.equal(signal.aborted, false);
+  f.document.visibilityState = 'hidden'; f.document.dispatch('visibilitychange'); await flush();
+  assert.equal(signal.aborted, true, 'the held connection is released');
+  await f.tick(60000); assert.equal(f.calls.length, 2, 'nothing is requested while hidden');
+  f.document.visibilityState = 'visible'; f.document.dispatch('visibilitychange'); await flush();
+  assert.equal(f.calls.length, 3); assert.equal(requestURL(f.calls[2].path).searchParams.get('wait'), '25');
+  f.panel.destroy();
+});
+
+test('a command cancels the held long poll and resumes it afterwards', async () => {
+  const f = fixture((path, settings) => {
+    if (settings?.method === 'POST') return {...unbound, connected: true, status: 'running', connection_mode: 'managed', message_cursor: `${'e'.repeat(32)}:1`};
+    return requestURL(path).searchParams.get('wait') ? new Promise(() => {}) : {...unbound, connected: true, status: 'idle', connection_mode: 'managed', state_token: 'd'.repeat(24), message_cursor: `${'e'.repeat(32)}:0`, managed_backend_settings: {codex: {model: 'gpt-6.1-sol', reasoning_effort: 'xhigh'}}};
+  }); await flush();
+  await f.tick(300); assert.equal(f.calls.length, 2); const held = f.calls[1].settings.signal;
+  await f.panel.sendTask('继续'); await flush();
+  assert.equal(held.aborted, true, 'the held poll does not keep its connection during a command');
+  const post = f.calls.find(call => call.settings?.method === 'POST');
+  assert.ok(post, 'the message was sent'); assert.ok(f.calls.slice(f.calls.indexOf(post) + 1).some(call => !call.settings?.method), 'polling resumes after the command');
+  f.panel.destroy();
+});

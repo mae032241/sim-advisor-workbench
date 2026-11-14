@@ -29,6 +29,7 @@ class ExternalAgentBridge:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.sessions, self.clock, self.process_alive = sessions, clock, process_alive
         self.lock = threading.RLock()
+        self.on_change = None  # Optional wakeup hint after each saved binding change.
 
     def _path(self, sid):
         if not isinstance(sid, str) or not sid:
@@ -52,9 +53,11 @@ class ExternalAgentBridge:
                 write_json(path, record)
         return record
 
-    def _save(self, sid, record):
+    def _save(self, sid, record, *, notify=True):
         record["workspace_root"] = str(self.workspace_paths.root)
         write_json(self._path(sid), record)
+        if notify and callable(self.on_change):
+            self.on_change(sid)
 
     @staticmethod
     def _text(value, field, limit, *, optional=False):
@@ -177,7 +180,8 @@ class ExternalAgentBridge:
             # after is the client's consumed cursor. Drop only commands the
             # client explicitly passed, keeping this a bounded, simple inbox.
             record["commands"] = [c for c in record["commands"] if c["id"] > after]
-            self._save(sid, record)
+            # A heartbeat alone is not a visible change; long-poll waiters recheck liveness on their own.
+            self._save(sid, record, notify=False)
             return {"commands": [dict(c) for c in record["commands"]], "cursor": record["cursor"],
                     "connected": self._status(record)["alive"]}
 
@@ -241,5 +245,6 @@ class ExternalAgentBridge:
                     record["activity"] = ""
             elif kind == "activity":
                 record["activity"] = activity
-            self._save(sid, record)
+            # Token deltas never reach the web view; skip waking long-poll waiters for each one.
+            self._save(sid, record, notify=kind != "delta")
             return normalized

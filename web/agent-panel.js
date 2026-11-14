@@ -14,7 +14,7 @@ window.SimAdvisorAgentPanel = (() => {
     };
     const button = (text, className = "button button-subtle") => { const node = make("button", className, text); node.type = "button"; return node; };
     const labels = { disconnected: "未连接", starting: "正在连接", idle: "已连接 · 空闲", running: "运行中", error: "连接异常" };
-    let sessionId = null, epoch = 0, pollSerial = 0, timer = null, snapshot = null, commandPending = false, refreshingPlan = false, pendingRevision = null, autoLoading = false, localError = "", commandError = "", destroyed = false, notifiedState = "", savedSettings = null, copyingLink = false, backendData = null, backendChoicesKey = "", effortChoicesKey = "", fieldBackend = "codex", messageCursor = "new";
+    let sessionId = null, epoch = 0, pollSerial = 0, timer = null, snapshot = null, commandPending = false, refreshingPlan = false, pendingRevision = null, autoLoading = false, localError = "", commandError = "", destroyed = false, notifiedState = "", savedSettings = null, copyingLink = false, backendData = null, backendChoicesKey = "", effortChoicesKey = "", fieldBackend = "codex", messageCursor = "new", stateToken = null, pollController = null;
     const controllers = new Set(), drafts = new Map(), settingsDrafts = new Map(), backendDrafts = new Map();
     const messages = new Map(), messageRows = new Map(), messageSequences = new Map();
     const defaultBackends = [
@@ -219,11 +219,14 @@ window.SimAdvisorAgentPanel = (() => {
       try { return await Promise.race([operation, timeout, cancelled]); }
       finally { clearTimeout(deadline); controller.signal.removeEventListener("abort", onAbort); }
     }
-    async function request(suffix, body, token = epoch) {
-      const id = sessionId, controller = new AbortController(); controllers.add(controller);
+    // wait/known turn a status read into a long poll: the server answers at once if its state differs
+    // from `known`, otherwise when something visible changes or after `wait` seconds.
+    async function request(suffix, body, token = epoch, {wait = 0, known = null, controller = new AbortController()} = {}) {
+      const id = sessionId; controllers.add(controller);
       try {
         const query = new URLSearchParams({view: "updates", after: messageCursor});
-        const {response, data} = await boundedJSON(`/api/sessions/${encodeURIComponent(id)}/agent${suffix}?${query}`, controller, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}, suffix === "/connect" ? 120000 : body === undefined ? 15000 : 30000);
+        if (wait > 0 && known) { query.set("wait", String(wait)); query.set("known", known); }
+        const {response, data} = await boundedJSON(`/api/sessions/${encodeURIComponent(id)}/agent${suffix}?${query}`, controller, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}, suffix === "/connect" ? 120000 : body === undefined ? 15000 + wait * 1000 : 30000);
         if (!response.ok) throw new Error([data.error || `请求失败（HTTP ${response.status}）`, typeof data.detail === "string" ? data.detail : data.detail ? JSON.stringify(data.detail) : ""].filter(Boolean).join("\n"));
         if (token !== epoch || id !== sessionId || !current()) return null;
         return data;
@@ -242,21 +245,31 @@ window.SimAdvisorAgentPanel = (() => {
       } catch (error) { if (token === epoch && error.name !== "AbortError") { if (preserveDrafts) commandError = error.message; else localError = error.message; } }
       finally { controllers.delete(controller); if (token === epoch) { refreshingPlan = false; autoLoading = false; render(); } }
     }
-    // Poll on a timer only while something can change on its own: a connected or running Agent, a bound
-    // external Agent, or a plan update waiting to load. Idle pages check when opened, focused or shown.
+    // Keep a status request open only while something can change on its own: a connected or running Agent,
+    // a bound external Agent, or a plan update waiting to load. Idle pages check when opened, focused or shown.
+    // While live, each request is a long poll that the server holds until a visible change (or LONG_POLL_WAIT
+    // seconds), so replies and state changes show at once and an idle connection costs one request per wait.
+    // Servers that return no state_token get the older 2-second cadence.
+    const LONG_POLL_WAIT = 25, LONG_POLL_FLOOR = 300, FALLBACK_DELAY = 2000;
     function live() {
       return Boolean(snapshot?.connected || ["starting", "running"].includes(snapshot?.status) || snapshot?.external?.registered || pendingRevision != null);
     }
     function pageHidden() { return typeof document !== "undefined" && document.visibilityState === "hidden"; }
     async function poll(token = epoch) {
       const serial = ++pollSerial;
-      clearTimeout(timer);
+      clearTimeout(timer); pollController?.abort(); pollController = null;
       if (!current() || commandPending || pageHidden()) return;
+      const controller = new AbortController(), started = Date.now(), wait = snapshot && stateToken && live() ? LONG_POLL_WAIT : 0;
+      let delay = FALLBACK_DELAY; pollController = controller;
       try {
-        const result = await request("", undefined, token);
-        if (result && token === epoch && serial === pollSerial) { mergeMessages(result); applySettings(result); snapshot = result; localError = ""; rememberRevision(); autoLoading = pendingRevision != null && !dirty() && !busy() && !refreshingPlan; render(); try { await readPlan(token); } finally { if (autoLoading) { autoLoading = false; render(); } } }
+        const result = await request("", undefined, token, {wait, known: stateToken, controller});
+        if (result && token === epoch && serial === pollSerial) {
+          stateToken = typeof result.state_token === "string" ? result.state_token : null;
+          if (stateToken) delay = Math.max(0, LONG_POLL_FLOOR - (Date.now() - started));
+          mergeMessages(result); applySettings(result); snapshot = result; localError = ""; rememberRevision(); autoLoading = pendingRevision != null && !dirty() && !busy() && !refreshingPlan; render(); try { await readPlan(token); } finally { if (autoLoading) { autoLoading = false; render(); } }
+        }
       } catch (error) { if (token === epoch && serial === pollSerial && error.name !== "AbortError") { localError = error.message; render(); } }
-      finally { if (token === epoch && serial === pollSerial && current() && !pageHidden() && (live() || !snapshot)) timer = setTimeout(() => poll(token), 2000); }
+      finally { if (pollController === controller) pollController = null; if (token === epoch && serial === pollSerial && current() && !pageHidden() && (live() || !snapshot)) timer = setTimeout(() => poll(token), delay); }
     }
     async function command(action, body = {}, messageText = null) {
       if (!current() || commandPending || busy()) return false;
@@ -283,7 +296,7 @@ window.SimAdvisorAgentPanel = (() => {
       if (sessionId) drafts.set(sessionId, input.value);
       rememberSettingsDraft();
       epoch++; pollSerial++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear();
-      sessionId = nextId; autoLoading = false; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; messageCursor = "new";
+      sessionId = nextId; autoLoading = false; stateToken = null; pollController = null; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; messageCursor = "new";
       textIfChanged(dshCopyStatus, ""); dshCopyStatus.hidden = true; dshLinkDetails.open = false;
       const configDraft = settingsDrafts.get(nextId); setManagedFields(configDraft || { managed_backend: "codex", model: "", reasoning_effort: "xhigh" }); modeInput.value = configDraft?.connection_mode || "managed";
       clearMessages(); input.value = drafts.get(nextId) || ""; conversation.open = true; settings.open = false; render(); if (nextId) poll(epoch);
@@ -318,7 +331,8 @@ window.SimAdvisorAgentPanel = (() => {
     input.addEventListener("keydown", (event) => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); form.requestSubmit(); } });
     form.addEventListener("submit", async (event) => { event.preventDefault(); const text = input.value.trim(); if (text) await command("message", { text }, text); });
     let lastWake = 0;
-    function onVisibility() { if (pageHidden() || !sessionId || commandPending || Date.now() - lastWake < 1000) return; lastWake = Date.now(); poll(); }
+    // A hidden tab releases its held request: browsers allow only ~6 connections per origin.
+    function onVisibility() { if (pageHidden()) { pollSerial++; clearTimeout(timer); pollController?.abort(); pollController = null; return; } if (!sessionId || commandPending || Date.now() - lastWake < 1000) return; lastWake = Date.now(); poll(); }
     function destroy() { destroyed = true; epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear(); document.removeEventListener?.("visibilitychange", onVisibility); window.removeEventListener?.("focus", onVisibility); }
     document.addEventListener?.("visibilitychange", onVisibility); window.addEventListener?.("focus", onVisibility);
     window.addEventListener("pagehide", destroy, { once: true });
