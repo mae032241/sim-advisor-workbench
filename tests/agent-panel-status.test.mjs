@@ -324,3 +324,22 @@ test('when no clipboard is available the manual link opens with a visible note n
   assert.equal(copy.textContent, '复制 DSH 绑定链接');
   f.panel.destroy();
 });
+
+test('a detached external binding does not keep showing its old name; a registered one does', async () => {
+  let binding = {registered: false, alive: false, name: 'old probe', offline_reason: 'not_registered'};
+  const f = fixture(() => ({...unbound, external: binding})); await flush();
+  const summary = f.get('agent-model-summary');
+  assert.equal(summary.textContent, '外部 Agent：未绑定');
+  binding = {registered: true, alive: true, name: 'DSH 会话 7'};
+  f.document.dispatch('visibilitychange'); await flush();
+  assert.match(summary.textContent, /^外部 Agent：DSH 会话 7 · /);
+  f.panel.destroy();
+});
+
+test('the settings form inside the connection section has its own distinct name', async () => {
+  const f = fixture(() => unbound); await flush();
+  const summaries = []; const walk = node => { if (node.tagName === 'SUMMARY') summaries.push(node.textContent); node.children.forEach(walk); }; walk(f.host);
+  assert.ok(summaries.includes('连接与模型')); assert.ok(summaries.includes('更改连接方式或模型'));
+  assert.ok(!summaries.some(text => /连接与模型设置|连接方式与模型设置/.test(text)));
+  f.panel.destroy();
+});

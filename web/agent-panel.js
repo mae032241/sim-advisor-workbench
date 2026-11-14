@@ -31,7 +31,7 @@ window.SimAdvisorAgentPanel = (() => {
     dshLinkDetails.append(dshLinkSummary, dshLinkLabel, dshLinkInput); dshActions.append(copyDshLink, dshLinkDetails, dshCopyStatus);
     dshCopyStatus.setAttribute("role", "status"); dshCopyStatus.hidden = true;
     dshBinding.append(dshActions, make("p", "agent-dsh-hint", "绑定既有 DSH 会话（外部模式）：安装 bridge 插件后发送“连接这个方案：<url>”，将 <url> 换成复制的链接。"));
-    const settings = make("details", "agent-settings"), settingsSummary = make("summary", "", "连接与模型设置"), settingsForm = make("form", "agent-settings-form");
+    const settings = make("details", "agent-settings"), settingsSummary = make("summary", "", "更改连接方式或模型"), settingsForm = make("form", "agent-settings-form");
     const modelLabel = make("label", "", "模型 ID"), modelInput = make("input"), effortLabel = make("label", "", "推理强度"), effortInput = make("select");
     const settingsUid = host.id || "sim-advisor-agent";
     const modeField = make("div", "agent-settings-field agent-mode-field"), modeLabel = make("label", "", "连接方式"), modeInput = make("select"); modeInput.id = `${settingsUid}-mode`; modeLabel.htmlFor = modeInput.id;
@@ -54,7 +54,7 @@ window.SimAdvisorAgentPanel = (() => {
     const uid = host.id || "sim-advisor-agent"; input.id = `${uid}-message`; label.htmlFor = input.id; input.rows = 3; input.maxLength = 12000; input.placeholder = "例如：重点解释网格构建，并说明还缺哪些信息。";
     const draftNote = make("p", "agent-draft-note"), actions = make("div", "agent-message-actions"), send = make("button", "button button-primary", "发送"), disconnect = button("断开连接");
     send.type = "submit"; actions.append(send, disconnect); form.append(label, input, draftNote, actions); conversation.append(summary, history, form);
-    host.classList.add("agent-panel"); host.setAttribute("aria-label", "Agent 对话"); const connection = make("details", "agent-connection"), connectionSummary = make("summary", "", "连接方式与模型设置"); connection.append(connectionSummary, modelSummary, connectionNote, dshBinding, settings); conversation.open = true;
+    host.classList.add("agent-panel"); host.setAttribute("aria-label", "Agent 对话"); const connection = make("details", "agent-connection"), connectionSummary = make("summary", "", "连接与模型"); connection.append(connectionSummary, modelSummary, connectionNote, dshBinding, settings); conversation.open = true;
     host.replaceChildren(heading, latest, activity, update, errorBox, conversation, connection);
 
     function current() { return !destroyed && sessionId && options.getSession?.()?.id === sessionId; }
@@ -175,12 +175,16 @@ window.SimAdvisorAgentPanel = (() => {
       setIfChanged(send, "title", configDirty ? "设置尚未保存，请先保存或还原设置" : external && !live ? !binding.registered ? "外部 Agent 未绑定，请先在 DSH 重新绑定本方案" : "外部 Agent 已离线，请恢复连接" : startBlocked ? managedStartReason() : "");
       textIfChanged(send, state === "running" ? "补充说明" : commandPending ? "发送中…" : "发送");
       setIfChanged(input, "disabled", commandPending || busy());
-      textIfChanged(modelSummary, savedSettings ? `${external ? `外部 Agent：${binding.name || "名称未报告"}` : `网页托管 ${backendTitle}`} · ${snapshot?.model || "模型未报告"} / ${snapshot?.reasoning_effort || "推理强度未报告"}${configDirty ? " · 有未保存修改" : ""}` : "正在读取当前连接配置…");
+      // A detached binding keeps its old name on the server; only a registered one describes the current connection.
+      const connectionText = external
+        ? binding.registered ? `外部 Agent：${binding.name || "名称未报告"} · ${snapshot?.model || "模型未报告"} / ${snapshot?.reasoning_effort || "推理强度未报告"}` : "外部 Agent：未绑定"
+        : `网页托管 ${backendTitle} · ${snapshot?.model || "模型未报告"} / ${snapshot?.reasoning_effort || "推理强度未报告"}`;
+      textIfChanged(modelSummary, savedSettings ? `${connectionText}${configDirty ? " · 有未保存修改" : ""}` : "正在读取当前连接配置…");
       const heartbeat = binding.last_seen ? new Date(typeof binding.last_seen === "number" ? binding.last_seen * 1000 : binding.last_seen) : null;
       const offlineReason = { process_exited: "登记的进程已退出", heartbeat_timeout: "心跳已超时", not_registered: "尚未注册" }[binding.offline_reason] || binding.offline_reason || "暂时无法确认外部 Agent 在线";
       textIfChanged(connectionNote, !external ? startBlocked ? managedStartReason() : backend === "dsh" ? "网页托管 DSH 使用独立的官方 profile 进程；停止中断本轮，断开关闭该托管进程。既有桌面 DSH 会话独立保留。" : "" : !binding.registered ? "当前方案未绑定外部 Agent。请复制本方案的 DSH 绑定链接，在 DSH 当前会话发送“连接这个方案：<url>”重新绑定；工作台不会自动启动或注册 Agent。" : !live ? `外部 Agent 已离线：${offlineReason}。请检查该 Agent，或断开绑定。` : `断开仅解除绑定，不终止外部进程。${heartbeat && !Number.isNaN(heartbeat.getTime()) ? ` 最近心跳 ${heartbeat.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}`);
       setIfChanged(connectionNote, "hidden", !connectionNote.textContent); classIfChanged(connectionNote, "agent-connection-offline", external && binding.registered && !live);
-      textIfChanged(settingsSummary, configDirty ? "连接与模型设置 · 未保存" : "连接与模型设置");
+      textIfChanged(settingsSummary, configDirty ? "更改连接方式或模型 · 未保存" : "更改连接方式或模型");
       const selectedInfo = backendOption(backendInput.value);
       textIfChanged(settingsNote, configLocked ? `已连接或绑定，请先断开再修改后端、模型和强度。${configDirty ? "未保存修改仍已保留，暂不能发送。" : ""}` : configDirty ? "设置尚未保存，连接和发送已暂停。保存或还原设置后继续。" : modeInput.value === "external" ? "外部模型由 Agent 自报；托管后端配置保留，当前不使用。" : selectedInfo.enabled === false ? "当前服务禁用托管启动；仍可保存配置或使用外部绑定。" : selectedInfo.available === false ? `本机未发现 ${backendName(backendInput.value)} 命令，连接前请检查运行环境。` : `填写本机 ${backendName(backendInput.value)} 可用模型 ID；默认 ${selectedInfo.default_model} / ${selectedInfo.default_effort}。`);
       classIfChanged(settingsNote, "agent-settings-unsaved", configDirty);
