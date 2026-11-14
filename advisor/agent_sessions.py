@@ -64,7 +64,9 @@ class AgentSessions:
         self.monitor.start()
 
     def _entry(self, sid):
-        session = self.sessions.get(sid)  # Validate identity before forming any path.
+        # Validate identity before forming any path; head() avoids re-parsing an unchanged plan file.
+        head = getattr(self.sessions, "head", None)
+        session = head(sid) if callable(head) else self.sessions.get(sid)
         with self.lock:
             previous = self.entries.get(sid)
             if previous is not None and previous.get("lifecycle_revision", 0) != session.get("lifecycle_revision", 0):

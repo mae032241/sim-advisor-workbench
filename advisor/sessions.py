@@ -171,6 +171,11 @@ class SessionStore:
 
     def revision(self, session_id: str) -> int:
         """Current revision for status polls, without re-parsing an unchanged plan file."""
+        return self.head(session_id)["revision"]
+
+    def head(self, session_id: str) -> dict:
+        """Identity fields for existence checks and polls: validates the ID, rejects
+        trashed or missing plans, and parses the file only when it changed."""
         with self.lock:
             if self._trash_path(session_id).exists():
                 raise FileNotFoundError("方案已移入已删除列表。")
@@ -183,10 +188,11 @@ class SessionStore:
             signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
             cached = cache.get(session_id)
             if cached and cached[0] == signature:
-                return cached[1]
-            value = self._record(path, session_id)["revision"]
+                return dict(cached[1])
+            record = self._record(path, session_id)
+            value = {"id": session_id, "revision": record["revision"], "lifecycle_revision": record["lifecycle_revision"]}
             cache[session_id] = (signature, value)
-            return value
+            return dict(value)
 
     def get(self, session_id: str) -> dict:
         with self.lock:

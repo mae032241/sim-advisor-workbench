@@ -33,7 +33,9 @@ class ExternalAgentBridge:
     def _path(self, sid):
         if not isinstance(sid, str) or not sid:
             raise ValueError("session_id 必须是方案 ID 文本。")
-        self.sessions.get(sid)  # Validate before constructing a filesystem path.
+        # Validate before constructing a filesystem path; head() avoids re-parsing an unchanged plan file.
+        head = getattr(self.sessions, "head", None)
+        head(sid) if callable(head) else self.sessions.get(sid)
         return self.directory / (sid + ".json")
 
     def _load(self, sid):

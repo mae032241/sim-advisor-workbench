@@ -242,21 +242,26 @@ def test_external_delta_stream_adds_no_plan_reads_beyond_bridge_validation(bound
     binding = agents.register_external(sid, {"name": "Streaming external fixture", "pid": 101})
     entry = agents.entries[sid]
     read_plan = Mock(wraps=store.get)
+    check_plan = Mock(wraps=store.head)
     lookup_entry = Mock(wraps=agents._entry)
     persist_chat = Mock(wraps=agents._persist)
     monkeypatch.setattr(store, "get", read_plan)
+    monkeypatch.setattr(store, "head", check_plan)
     monkeypatch.setattr(agents, "_entry", lookup_entry)
     monkeypatch.setattr(agents, "_persist", persist_chat)
     event = {"type": "delta", "text": "x", "message_id": "stream"}
-    # The real bridge checks session existence on both load and save. The
-    # conversation adapter must not add a third full-plan read per delta.
+    # The real bridge checks session existence on both load and save, through
+    # the cached identity check rather than a full-plan parse. The conversation
+    # adapter must not add a third check, or any full-plan read, per delta.
     agents.external.publish(sid, binding["binding_id"], event)
-    baseline_reads = read_plan.call_count
-    assert baseline_reads == 2
-    read_plan.reset_mock()
+    baseline_checks = check_plan.call_count
+    assert baseline_checks == 2
+    assert read_plan.call_count == 0
+    check_plan.reset_mock()
     for _ in range(100):
         assert agents.publish_external(sid, {"binding_id": binding["binding_id"], "event": event})["accepted"]
-    assert read_plan.call_count == baseline_reads * 100
+    assert check_plan.call_count == baseline_checks * 100
+    read_plan.assert_not_called()
     lookup_entry.assert_not_called()
     persist_chat.assert_not_called()
     assert entry["record"]["messages"][-1]["text"] == "x" * 100
