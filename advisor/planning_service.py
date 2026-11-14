@@ -29,6 +29,9 @@ from .plan_settings import (PLAN_SETTINGS_SCHEMA, validate_plan_settings, review
 from .mechanism_checks import mechanism_checklist, review_mechanism_coverage, known_mechanisms
 from .tool_contracts import (CONTRACT_TOOL, CONTRACT_SCHEMA, ToolContractError,
                              explicit_schema, describe_contract, read_contract)
+from .html_tree_tools import (TOOL_NAMES as HTML_TOOLS, tool_definitions as html_tool_definitions,
+                              HtmlTreeTools, is_html_source_id, html_locator_matches)
+from .case_original_tools import tool_definition as case_original_definition, CaseOriginalInspector
 
 def obj(properties):
     return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
@@ -41,7 +44,7 @@ STRINGS = {"type": "array", "items": STR}
 LIBRARY_TYPES = ["official-manuals", "official-models", "user-manuals", "user-models"]
 LIBRARY_IDS = {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": r"\S"}, "minItems": 1, "maxItems": 1000}
 LIBRARY_TOOLS = {"get_library_scope", "set_libraries_enabled"}
-KNOWLEDGE_TOOLS = {"search_knowledge", "read_source", "search_cases", "get_case_guide", "read_case_configuration"}
+KNOWLEDGE_TOOLS = {"search_knowledge", "read_source", "search_cases", "get_case_guide", "get_case_navigation", "read_case_configuration", "inspect_case_source"} | HTML_TOOLS
 DRAFT_TOOLS = {"get_plan_draft", "repair_plan_draft"}
 SETTINGS_TOOLS = {"save_plan_settings", "get_plan_settings"}
 GUIDANCE_TOOLS = {"get_mechanism_checks"}
@@ -86,7 +89,8 @@ def _guide_view(guide, stage=None):
                              "key_hint": next((fact.get("hint") for fact in item.get("observed", []) if fact.get("hint")), None)}
                             for item in guide["stages"]]
         result["detail_scope"] = "flow_overview"
-        result["next_action"] = "按需用get_case_guide的stage读取单个环节；导航不算正文已读。"
+        result["next_action"] = "用get_case_navigation逐层展开完整已解析节点与依赖；stage只读精选环节摘要，原值用read_case_configuration。导航不算已读。"
+    result.setdefault("next_action", "环节内容是摘要；用get_case_navigation逐层/依赖展开，再按read_requests读取完整原值。")
     return result
 
 
@@ -153,13 +157,23 @@ def planning_tools():
     configuration_schema["required"] = ["case_id"]
     guide_schema = obj({"case_id": case_id_schema, "stage": {"type": "string", "enum": list(FEATURE_BRANCHES)}})
     guide_schema["required"] = ["case_id"]
+    navigation_schema = obj({"case_id": case_id_schema,
+        "view": {"type": "string", "enum": ["children", "dependencies", "manual_links", "implementations"], "default": "children"},
+        "node_path": {"type": "string", "pattern": r"^compact:node/[0-9]+$", "maxLength": 100},
+        "manual_node_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "query": {"type": "string", "maxLength": 300},
+        "direction": {"type": "string", "enum": ["outgoing", "incoming", "both"], "default": "both"},
+        "offset": {"type": "integer", "minimum": 0, "default": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 8}})
+    navigation_schema["required"] = []
     scope_schema = obj({"query": {"type": "string", "maxLength": 2000}, "type": {"type": "string", "enum": LIBRARY_TYPES}})
     scope_schema["required"] = []
     return [
         tool("get_plan", "读取绑定方案的需求、模型事实、用户回答、当前流程、版本与几何事实白名单。首次及保存前调用。", obj({})),
         tool("search_knowledge", SEARCH_KNOWLEDGE_DESCRIPTION, search_schema),
-        tool("search_cases", "在已启用资料库中使用QMD查找模型案例概要；仅返回概要，不与Frame/配置节点竞争。先读概要判断适用性，再用返回的精确id调用get_case_guide沿流程查设置；asset_key和文件路径不是case_id。命中不等于已读。", cases_schema),
+        tool("search_cases", "定位已启用库中的模型案例概要，不搜索全部配置节点。优先短机制/接口词；QMD关键词按项目术语扩展后OR/BM25排序，并非任务句语义匹配。结果偏题时用get_library_scope选择相关来源库，再带library_ids重查。先read_source判断适用性；仅在需要时用精确id作为case_id调用inspect_case_source离线查看原始MPH，或read_case_configuration读已有保存/API配置。get_case_navigation可辅助定位已有分层、必要引用与手册入口，不要求构造或遍历全图。asset_key和文件路径不是case_id；命中不等于适用或已读。", cases_schema),
         tool("get_case_guide", "读取已构建案例的实现流程导航。case_id必须是search_cases返回的精确id，不是asset_key或文件路径。默认只返流程概要；用stage按需展开单个环节的关键线索、原始配置/教程入口及缺口。若not_prepared，可read_case_configuration按category读取已有配置。关闭库和隔离测试集不可读；导航不算正文已读或设置已生效。", guide_schema),
+        tool("get_case_navigation", "用于核对参考案例的实现结构、配置间引用及手册依据，辅助比较路线的实现条件和缺口。完整已解析案例的分层、依赖和手册关联导航，不是精选摘要。children/dependencies/manual_links需要search_cases返回的精确case_id，node_path可定位compact:node/N；children可query定位节点，dependencies可direction看来源或消费者。implementations需要manual_node_id，从手册反查案例配置，不传case_id。offset/next_offset分页；未构造返回not_prepared。引用边分confirmed/ambiguous/unresolved，不能视为物理因果或方法适用性已验证。按read_requests调用read_case_configuration/read_html_section核对原值；导航不授予阅读或引用信用。关闭/删除库及隔离案例不可读。", navigation_schema),
         tool("read_case_configuration", "按精确案例ID读取真实保存配置或API观测，可用category和node_path定位网格/求解节点。只核查实际返回节点；partial、未生效或物理有效性未评估状态保持原样。非空成功读取计入该案例的阅读账本。", configuration_schema),
         tool("read_source", READ_SOURCE_DESCRIPTION, {"type": "object", "additionalProperties": False, "required": ["id"], "properties": {
             "id": {"type": "string", "minLength": 1, "maxLength": 30000, "pattern": r"\S"},
@@ -179,7 +193,8 @@ def planning_tools():
         tool("get_library_scope", LIBRARY_SCOPE_DESCRIPTION, scope_schema),
         tool("set_libraries_enabled", "显式批量启用或关闭指定library_ids，无需用户确认，不构建索引或向量。按研究需要选择若干库，不自动启用全部库；未知或已删除库会拒绝整批。全局状态变更，不修改方案。", obj({"library_ids": {**LIBRARY_IDS, "items": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": r"\S"}}, "enabled": {"type": "boolean"}})),
         tool(CONTRACT_TOOL, "查询当前实际接线工具的完整输入契约及指定字段规则、输出含义和语义约束；schema直接来自后端校验。签名出现unknown或修补字段前先读取此工具；不启动Agent、不读资料正文、不改变方案或阅读权限。", CONTRACT_SCHEMA),
-    ]
+    ] + [dict(definition, inputSchema=explicit_schema(definition["inputSchema"]))
+         for definition in html_tool_definitions() + [case_original_definition()]]
 
 
 def tool_definitions(*, bound=False, include_alias=False):
@@ -215,6 +230,21 @@ class PlanningService:
         self.lock=threading.RLock()
         self.search_lock=threading.Lock()
         self.drafts=PlanDraftStore(self.data_dir)
+        self._html_trees = None
+        self.case_manual_links = None
+        self.case_original_inspector = None
+
+    @property
+    def html_trees(self):
+        # Contract/catalog discovery must not touch a library or task backend.
+        with self.lock:
+            if self._html_trees is None:
+                self._html_trees = HtmlTreeTools(getattr(self.kb, "store", None))
+            return self._html_trees
+
+    @html_trees.setter
+    def html_trees(self, value):
+        self._html_trees = value
 
     def _entry(self,sid):
         self.sessions.get(sid)
@@ -250,6 +280,58 @@ class PlanningService:
             del contexts[:-2000]
             self._persist(sid, entry)
 
+    def _document(self, identity):
+        if is_html_source_id(identity):
+            try:
+                return self.html_trees.get_document(identity, metadata_only=True)
+            except (KeyError, ValueError, OSError) as error:
+                raise PermissionError("Native HTML source is no longer active, readable, or unchanged") from error
+        return self.kb.get_document(identity)
+
+    def _native_read_refs(self, sid, source):
+        return [copy.deepcopy(ref) for ref in self._entry(sid)["record"].get("read_contexts", [])
+                if html_locator_matches(source, ref)]
+
+    def _source_snapshot(self, sid, source):
+        if not is_html_source_id(source.get("id")):
+            return source
+        snapshot = {key: copy.deepcopy(value) for key, value in source.items()
+                    if key not in {"text", "excerpt", "images", "eqrefs", "related_links"}}
+        snapshot["read_evidence_refs"] = self._native_read_refs(sid, source)
+        return snapshot
+
+    def _record_html_read(self, sid, entry, result):
+        if entry is None or result.get("state") != "ready" or not result.get("text", "").strip():
+            return result
+        identity = result.get("source_id")
+        if not is_html_source_id(identity):
+            return result
+        source = self._document(identity)
+        refs = result.get("evidence_refs", [])
+        if not source or not refs or not all(html_locator_matches(source, ref) for ref in refs):
+            raise PermissionError("Native HTML read receipt differs from the current source")
+        with self.lock:
+            if not self._source_available(source):
+                raise PermissionError("Native HTML source closed during the read")
+            if identity not in entry["record"]["read_sources"]:
+                entry["record"]["read_sources"].append(identity)
+            self._record_read_contexts(sid, entry, refs)
+        return result
+
+    def _require_native_contexts(self, sid, rows):
+        ledger = {(ref["source_id"], ref["context"], ref["locator"])
+                  for ref in self._entry(sid)["record"].get("read_contexts", [])}
+        for row in rows:
+            for ref in row["source_refs"]:
+                if ref["context"] == "navigation":
+                    continue
+                if is_html_source_id(ref["source_id"]) or ref["context"] == "html_section":
+                    source = self._document(ref["source_id"])
+                    key = (ref["source_id"], ref["context"], ref["locator"])
+                    if (not source or not is_html_source_id(source["id"]) or not self._source_available(source)
+                            or key not in ledger or not html_locator_matches(source, ref)):
+                        raise PermissionError("Native HTML setting evidence must copy an actually delivered current html_section range")
+
     def _settings_rows(self, sid, value):
         staged = self._entry(sid)["record"].get("plan_settings_stage") or {}
         if staged.get("base_revision") == value["revision"]:
@@ -280,7 +362,7 @@ class PlanningService:
         available = []
         for identity in read:
             try:
-                source = self.kb.get_document(identity)
+                source = self._document(identity)
             except PermissionError:
                 source = None
             if source and self._source_available(source):
@@ -316,6 +398,9 @@ class PlanningService:
                     "next_action": "处理mechanism_coverage未登记项；将原子拟用值原文保留到implementation指定的步骤字段，实际动作另写action。有方法缺口就定向补查或保留条件。"}
 
     def _source_available(self, source):
+        identity = source.get("id") if isinstance(source, dict) else source
+        if is_html_source_id(identity):
+            return self.html_trees.source_available(source)
         checker = getattr(self.kb, "source_available", None)
         return bool(checker(source)) if callable(checker) else True
 
@@ -391,6 +476,42 @@ class PlanningService:
         if sid is None and name not in KNOWLEDGE_TOOLS:
             raise ValueError("此工具需要明确的 session_id。")
         entry = self._entry(sid) if sid is not None else None
+        if name in HTML_TOOLS:
+            result = self.html_trees.call(name, args)
+            return self._record_html_read(sid, entry, result) if name == "read_html_section" else result
+        if name == "inspect_case_source":
+            store = getattr(self.kb, "store", None)
+            if store is None:
+                raise RuntimeError("当前知识提供方未连接资料库。")
+            with self.lock:
+                if self.case_original_inspector is None:
+                    self.case_original_inspector = CaseOriginalInspector(store)
+                inspector = self.case_original_inspector
+            result = inspector.call(args)
+            raw = result["raw_result"]
+            if args.get("view", "children") == "xml" and raw.get("text"):
+                import hashlib
+                route_hash = hashlib.sha256(raw["node_path"].encode('utf-8')).hexdigest()
+                start = raw["offset"]
+                locator = (f"mphxml:{raw['sha256']}:{raw['member']}:route-sha256:{route_hash}:"
+                           f"{raw['representation']}:{start}:{start + len(raw['text'])}")
+                ref = {"source_id": args["case_id"], "context": "original_mph_xml", "locator": locator}
+                with self.lock:
+                    if not store.source_available(args["case_id"]):
+                        raise PermissionError("资料库已关闭、删除或隔离，不能登记本次原件读取。")
+                    if entry is not None and args["case_id"] not in entry["record"]["read_sources"]:
+                        entry["record"]["read_sources"].append(args["case_id"])
+                        self._persist(sid, entry)
+                    self._record_read_contexts(sid, entry, [ref])
+                # This is original XML evidence only, never a compact/API
+                # setting receipt or credit for the unreturned file content.
+                result.update(evidence_refs=[ref], is_read_evidence=True,
+                              evidence_scope="Returned original saved XML text only; no effective-state validation.")
+            return result
+        if name == "read_source" and is_html_source_id(args.get("id")):
+            result = self.html_trees.call("read_html_section", {"node_id": args["id"],
+                "offset": args.get("offset", 0), "length": min(args.get("length", 1800), 3200)})
+            return self._record_html_read(sid, entry, result)
         if name in SETTINGS_TOOLS:
             schema = SETTINGS_SAVE_SCHEMA if name == "save_plan_settings" else SETTINGS_GET_SCHEMA
             errors = schema_errors(args, schema)
@@ -400,6 +521,7 @@ class PlanningService:
             if name == "save_plan_settings":
                 self.sessions.require_revision(value, args["revision"])
                 rows = validate_plan_settings(args["settings"])
+                self._require_native_contexts(sid, rows)
                 with self.lock:
                     self.sessions.require_revision(self.sessions.get(sid), args["revision"])
                     previous = entry["record"].get("plan_settings_stage") or {}
@@ -456,7 +578,7 @@ class PlanningService:
             available = []
             for identity in set(read) | set(historical):
                 try:
-                    source = self.kb.get_document(identity)
+                    source = self._document(identity)
                 except PermissionError:
                     source = None
                 if source and self._source_available(source):
@@ -503,6 +625,38 @@ class PlanningService:
                     "next_tool": "get_plan_settings", "physical_correctness": "not_evaluated"},
                 "sources": sources, "sources_note": "已有来源保留引用身份和有界摘要；完整正文由 read_source 按 id 分页读取。已读证据账本保持不变。",
                 "geometry_reference_catalog": geometry_reference_catalog(value.get("model"))}
+        if name == "get_case_navigation":
+            schema = next(t["inputSchema"] for t in planning_tools() if t["name"] == name)
+            errors = schema_errors(args, schema)
+            if errors:
+                raise ToolContractError(name, errors)
+            view = args.get("view", "children")
+            if view == "implementations":
+                if not args.get("manual_node_id") or set(args) & {"case_id", "node_path", "query", "direction"}:
+                    raise ValueError("implementations需要manual_node_id，不能同时传案例节点或依赖筛选。")
+            elif not args.get("case_id") or "manual_node_id" in args:
+                raise ValueError("案例导航需要精确case_id；manual_node_id仅用于implementations。")
+            if ("query" in args and view != "children") or ("direction" in args and view != "dependencies"):
+                raise ValueError("query仅用于children，direction仅用于dependencies。")
+            store = getattr(self.kb, "store", None)
+            if store is None:
+                raise RuntimeError("当前知识提供方未连接资料库。")
+            offset, limit = args.get("offset", 0), args.get("limit", 8)
+            if view in {"manual_links", "implementations"}:
+                from .case_manual_links import CaseManualLinks
+                with self.lock:
+                    if self.case_manual_links is None:
+                        self.case_manual_links = CaseManualLinks(store, html_tools=self.html_trees)
+                    links = self.case_manual_links
+                if view == "implementations":
+                    result = links.reverse(args["manual_node_id"], offset=offset, limit=limit)
+                else:
+                    result = links.links(args["case_id"], node_path=args.get("node_path"), offset=offset, limit=limit)
+            else:
+                from .case_tree import get_case_navigation
+                result = get_case_navigation(store, args["case_id"], node_path=args.get("node_path"), view=view,
+                    query=args.get("query"), direction=args.get("direction", "both"), offset=offset, limit=limit)
+            return dict(result, is_read_evidence=False)
         if name in {"search_cases", "get_case_guide", "read_case_configuration"}:
             schema = next(t["inputSchema"] for t in planning_tools() if t["name"] == name)
             if set(args) - set(schema["properties"]) or set(schema["required"]) - set(args):
@@ -523,8 +677,14 @@ class PlanningService:
                     extra["include_geometry_only"] = args["include_geometry_only"]
                 with self.search_lock:
                     hits = self.kb.search_cases(query, library_ids=args.get("library_ids"), limit=6, **extra)
-                return {"mode": "qmd_keyword", "retrieval_view": "case_overviews", "results": [candidate_for_agent(h) for h in hits],
-                        "note": "仅模型概要；用结果中的精确id作为case_id获取流程导航，再按stage展开或读取原始配置。增强概要还依赖教程来源库；get_library_scope会列出case_context_dependencies，须按需一并启用。需读取原文核对适用性。"}
+                result = {"mode": "qmd_keyword", "retrieval_view": "case_overviews", "results": [candidate_for_agent(h) for h in hits],
+                        "query_info": {"match_mode": "expanded_terms_or_bm25", "requested_library_ids": args.get("library_ids"),
+                            "default_scope": "all_enabled_libraries", "ranking_does_not_verify_applicability": True,
+                            "refinement": "若当前页案例偏题，先用get_library_scope选择相关来源库，再带library_ids用短机制词重查；不要为使用工具而展开不适用案例。"},
+                        "note": "仅模型概要；先read_source读取概要，再用结果中的精确id作为case_id调用get_case_navigation，按children/dependencies/manual_links查看层级、引用和手册入口，按read_requests读取原始配置。get_case_guide仅作流程摘要补充。增强概要还依赖教程来源库；get_library_scope会列出case_context_dependencies，须按需一并启用。空结果须先核对实际启停范围。需读取原文核对适用性。"}
+                if not hits:
+                    result["scope_discovery"] = {"tool": "get_library_scope", "arguments": {}}
+                return result
             store = getattr(self.kb, "store", None)
             if store is None:
                 raise RuntimeError("当前知识提供方未连接资料库。")
@@ -605,6 +765,8 @@ class PlanningService:
             with self.search_lock:
                 hits = self.kb.search(query, limit=6, kind=kind, filters=filters)
             search_scope = {"feature_branch": branch,
+                "query_match_mode": "expanded_terms_or_bm25" if mode == "qmd_keyword" else "embedding_similarity",
+                "requested_library_ids": args.get("library_ids"),
                 "branch_filter_mode": "explicit_labels_only" if branch is not None else "not_applied",
                 "unlabeled_sources_excluded": branch is not None}
             if branch is not None:
@@ -669,11 +831,18 @@ class PlanningService:
             ref = {"source_id": source["id"], "context": "source_text", "locator": f"text:{offset}:{offset + len(response['text'])}"}
             self._record_read_contexts(sid, entry, [ref])
             viewed = dict(source_page_for_agent(response), evidence_refs=[ref])
+            if source.get("type") == "model_case":
+                identity = source["id"]
+                viewed["case_reading"] = {
+                    "note": "仅在案例与当前问题相关时展开；以下是读取入口，不代表配置已读或可迁移。",
+                    "original": {"tool": "inspect_case_source", "arguments": {"case_id": identity, "limit": 4}},
+                    "configuration": {"tool": "read_case_configuration", "arguments": {"case_id": identity, "source": "saved", "limit": 1}},
+                    "navigation": {"tool": "get_case_navigation", "arguments": {"case_id": identity, "limit": 4}}}
             if source.get("type") == "saved_configuration":
                 data = source.get("data") or {}
                 node = (data.get("compact_ref") or {}).get("node_id")
                 viewed["configuration_hint"] = {"tool": "read_case_configuration", "scope": "source_text_only",
-                    "note": "本页可能仅有配置结构摘要，不代表已读实际属性。用search_cases/get_case_guide中的案例概要ID读取键值。",
+                    "note": "本页可能仅有配置结构摘要，不代表已读实际属性。用search_cases返回的案例概要ID作为case_id，沿get_case_navigation的read_requests读取键值。",
                     **({"node_path": "compact:node/" + str(node)} if type(node) is int else {})}
             return viewed
         if name in {"save_plan", "update_steps"}:
@@ -716,18 +885,22 @@ class PlanningService:
         unavailable = set(historical) - set(known)
         for source_id in self._entry(sid)["record"]["read_sources"]:
             try:
-                source = self.kb.get_document(source_id)
+                source = self._document(source_id)
             except PermissionError:
                 source = None
                 unavailable.add(source_id)
             if source:
-                known[source_id] = source
+                if is_html_source_id(source_id) and not self._native_read_refs(sid, source):
+                    unavailable.add(source_id)
+                    continue
+                known[source_id] = self._source_snapshot(sid, source)
         if name == "update_steps":
             plan = copy.deepcopy(value["plan"])
             settings, pending_settings = self._settings_rows(sid, value)
             if pending_settings:
                 settings = validate_plan_settings(settings)
                 self._require_setting_dispositions(sid, value, settings)
+            self._require_native_contexts(sid, settings)
             by_id = {step["id"]: step for step in args["steps"]}
             if not by_id or len(by_id) != len(args["steps"]) or not set(by_id) <= {s["id"] for s in plan["steps"]}:
                 raise ValueError("局部更新须提供不同id的已有节点；增删节点请save_plan。")
@@ -759,6 +932,7 @@ class PlanningService:
         else:
             response = copy.deepcopy(args)
             settings = validate_plan_settings(response.pop("plan_settings", self._settings_rows(sid, value)[0]))
+            self._require_native_contexts(sid, settings)
             self._require_setting_dispositions(sid, value, settings, cleared=args.get("plan_settings") == [])
             response["selected_source_ids"] = []
             requested = {source_id for step in args["plan"]["steps"] for source_id in step["source_ids"]}

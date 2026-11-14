@@ -16,6 +16,7 @@ def test_only_source_is_exported_and_public_docs_override_local_notes(tmp_path):
         'scripts/geometry_challenge/scenario.json': b'local scenario',
         'scripts/benchmark_product_report.py': b'local experiment commentary',
         'scripts/benchmark_product_replay.py': b'fixed local trial replay',
+        'scripts/summarize_raw_address.py': b'local grading paths and result aggregation',
         'scripts/replay_case09_retrieval.py': b'fixed local retrieval targets',
         'data/index.sqlite3': b'index', 'advisor/model.mph': b'model',
         '.git/config': b'history', 'dist/offline.zip': b'offline bundle',

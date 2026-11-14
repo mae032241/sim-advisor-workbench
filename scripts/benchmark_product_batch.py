@@ -64,7 +64,16 @@ def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + '.new')
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-    temporary.replace(path)
+    # A short-lived reader on Windows may deny replacement of its open file.
+    # This is bookkeeping contention, never an Agent/model execution failure.
+    for attempt in range(8):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(min(.02 * 2 ** attempt, .2))
 
 
 def progress():

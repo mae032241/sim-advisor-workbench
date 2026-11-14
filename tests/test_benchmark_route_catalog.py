@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 from advisor.bounded_knowledge import BoundedKnowledge
 from advisor.route_cards import tool_definitions
+from advisor.tool_delivery_audit import response_sha256, audit_rollout
 from scripts import benchmark_route_catalog as pilot
 from test_planning_case_tools import case_tools  # noqa: F401
 
@@ -49,3 +50,25 @@ def test_compatible_profile_requires_single_small_tool_call():
     assert pilot.NATIVE_PROFILE["features.code_mode_host"] is True
     assert "每个exec单元只能调用一次业务工具" in pilot.PAGING_INSTRUCTIONS
     assert "Hphi" not in pilot.MESSAGE and "Kirchhoff" not in pilot.MESSAGE
+
+
+def test_validation_feedback_hash_matches_actual_visible_payload(case_tools, tmp_path):
+    app, _, audit, _ = installed(case_tools, tmp_path)
+    result = app.agents.runtime_tool(case_tools.sid, 'read_tool_page',
+                                    {'handle': 'any', 'length': 16000})
+    payload = json.loads(result['contentItems'][0]['text'])
+    row = json.loads(audit.read_text(encoding='utf-8').splitlines()[-1])
+    assert row['response_sha256'] == response_sha256(payload)
+    assert row['response_sha256'] != response_sha256(result)
+    path = tmp_path / 'rollout-synthetic-thread-123.jsonl'
+    records = [{'type': 'session_meta', 'payload': {'id': 'synthetic-thread-123'}},
+               {'type': 'response_item', 'payload': {'type': 'custom_tool_call_output',
+                'call_id': 'c', 'output': [{'type': 'input_text', 'text': json.dumps(payload)}]}}]
+    path.write_text('\n'.join(json.dumps(r) for r in records), encoding='utf-8')
+    assert audit_rollout(path, 'synthetic-thread-123', expected_response_sha256=[row['response_sha256']])['valid']
+
+
+def test_method_card_only_condition_is_supported():
+    args = pilot.parser().parse_args(['--method-root', 'cards', '--candidate-list', 'sources.json',
+                                     '--condition', 'case_methods'])
+    assert args.condition == ['case_methods']

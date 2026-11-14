@@ -16,7 +16,7 @@ from threading import Lock
 MAX_PAGE_CHARACTERS = 1200
 _IDENTITY = ("id", "source_id", "case_id", "title", "type", "kind", "library_id", "revision_id")
 _SOURCE_FIELDS = _IDENTITY + ("text", "offset", "length", "returned_characters", "total_characters",
-    "next_offset", "evidence_refs", "source_context", "read_scope", "text_truncated", "configuration_hint")
+    "next_offset", "evidence_refs", "source_context", "read_scope", "text_truncated", "configuration_hint", "case_reading")
 _CONFIG_FIELDS = ("case_id", "source", "source_context", "partial", "truncated", "read_scope",
     "extraction_coverage", "coverage_read_scope", "physical_validation", "effective_activation",
     "total", "total_nodes", "matched", "available", "note")

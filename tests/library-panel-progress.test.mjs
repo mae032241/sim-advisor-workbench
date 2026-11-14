@@ -94,6 +94,7 @@ async function fixture(job = running(), options = {}) {
     else if (url.startsWith('/api/library-objects/')) data = await api.configuration(url, settings.signal);
     else if (url.endsWith('/cancel') && settings.method === 'POST') data = await api.cancelJob(url.split('/').at(-2), settings.signal);
     else if (url.startsWith('/api/library-jobs/')) data = await api.getJob(url.split('/').pop().split('?')[0], settings.signal);
+    else if (url.endsWith('/build-tree') && settings.method === 'POST') data = await api.buildTree(url.split('/').at(-2), settings.signal);
     else if (url.endsWith('/build')) data = typeof api.build === 'function' ? await api.build(settings.signal) : api.build;
     else throw Error(`Unexpected endpoint: ${url}`);
     return {ok: true, status: 200, json: async () => structuredClone(data)};
@@ -1737,5 +1738,46 @@ test('an old native-only manifest never creates a ready QMD index or hides QMD b
   assert.deepEqual(modes.filter(input => input.checked).map(input => input.value), ['qmd_keyword']);
   assert.ok(f.get('.lp-indexes').textContent.includes('尚无此模式的可用索引'));
   assert.ok(!f.get('.lp-indexes').textContent.includes('原生层级检索'));
+  f.controller.destroy();
+});
+
+test('manual chapter counts and tree-only construction use existing progress and cancellation', async () => {
+  const f = await fixture(null);
+  f.api.snapshot.html_trees = {idle: {tree_count: 2, node_count: 120, document_count: 99}};
+  await f.controller.refresh();
+  const status = f.get('.lp-html-navigation-status');
+  assert.equal(f.get('.lp-html-navigation').hidden, false);
+  assert.match(status.textContent, /2 棵目录树.*120 个章节节点.*99 份关联 HTML/);
+  f.api.buildTree = async id => {
+    const job = running({library_id: id, kind: 'html_tree', stage: 'html_tree',
+      progress: {completed: 2, total: 8, unit: 'files', current_file: 'guide/page.html', detail: '构造章节目录'}});
+    f.api.snapshot.jobs = [job]; return job;
+  };
+  await f.get('.lp-build-html-tree').emit('click'); await flush();
+  assert.equal(f.calls.filter(call => call.url === '/api/libraries/idle/build-tree' && call.settings.method === 'POST').length, 1);
+  assert.equal(f.calls.some(call => call.url.endsWith('/build')), false);
+  assert.match(f.get('.lp-progress-stage').textContent, /HTML 章节树/);
+  assert.equal(f.get('.lp-progress-counts').hidden, true);
+  assert.match(f.get('.lp-progress-files').textContent, /HTML 已核对/);
+  assert.equal(f.get('.lp-cancel-build').disabled, false);
+  assert.equal(f.get('.lp-build-html-tree').disabled, true);
+  await f.get('.lp-cancel-build').emit('click'); await flush();
+  assert.ok(f.calls.some(call => call.url.endsWith('/cancel') && call.settings.method === 'POST'));
+  assert.equal(f.get('.lp-html-navigation-status'), status);
+  f.controller.destroy();
+});
+
+test('chapter navigation reflects disabled libraries and stays out of model/evaluation views', async () => {
+  const f = await fixture(null);
+  f.api.snapshot.html_trees = {idle: {tree_count: 1, node_count: 50, document_count: 49}};
+  f.api.snapshot.libraries[0].enabled = false;
+  await f.controller.refresh();
+  assert.match(f.get('.lp-html-navigation-status').textContent, /资料库已关闭/);
+  assert.equal(f.get('.lp-build-html-tree').disabled, true);
+  f.controller.selectLibrary('models'); await flush();
+  assert.equal(f.get('.lp-html-navigation').hidden, true);
+  await f.get('.lp-tab-evaluation').emit('click'); await flush();
+  assert.equal(f.get('.lp-html-navigation').hidden, true);
+  assert.equal(f.calls.some(call => call.url.endsWith('/build-tree')), false);
   f.controller.destroy();
 });

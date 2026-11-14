@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 PLANNING_POLICY_VERSION = "comsol-planning/v6"
-RESEARCH_POLICY_VERSION = "comsol-research/v8"
+RESEARCH_POLICY_VERSION = "comsol-research/v12"
 COMMON_POLICY_MARKER = "{{COMMON_PLANNING_POLICY}}"
 RESEARCH_POLICY_MARKER = "{{COMSOL_RESEARCH_POLICY}}"
 
@@ -26,16 +26,23 @@ COMMON_PLANNING_POLICY = """先核对已给目标量、定义与单位、关注�
 自检目标量→机制→域→接口/本构→激励/耦合→网格→研究/求解→结果/验证的一致性；review_plan只提示结构、覆盖和证据账本缺口，不能替代物理判断。区分用户输入缺口、方法尚未核实之处和实施前检查：已给数据不重复追问；方法依据不足写evidence_gaps并说明影响，实施前检查写在步骤中，不全转成用户必答问题。未执行的检查写成计划，不声称已求解或已验证。
 保存前读取最新任务和版本。若save_plan因格式或字段约束失败，保留已编写内容，使用get_plan_draft读取草稿及具体错误，再用repair_plan_draft只修复出错字段；不得为通过格式验证而压缩成空泛短方案、清空引用或删除仍有效的实施细节。若当前工具未提供草稿修复能力，则依据具体错误修复原提交并重试。"""
 
-RESEARCH_POLICY = """先把需求和拟选路线拆成可核查的实施问题，再检索与阅读。先用get_library_scope查看资料库目录和启停状态，按任务需要显式启用指定库并等待返回成功后再检索；启用与检索有先后依赖，不能放入Promise.all/并行批次。并行只用于互不依赖的读取或查询。query是目录元数据的字面子串筛选，不是语义检索。筛选零匹配不表示全目录为空，应查看global_library_count并调用get_library_scope({})重新发现；不得因此声称无可用资料，也不得自动启用全部库。核对case_context_dependencies等实际依赖提示，按需要选择相关来源库。
-按任务所选机制检查拆出原子实施问题，用其检索词寻找依据；检查提示本身不能填source_refs。阅读适用案例时逐项登记决定方程/特征作用域、材料本构、边界激励、耦合传递、研究激活/顺序与数值离散的独立设置，明确采用、调整、不适用或尚未核实，再生成当前任务流程。避免只摘录接口名和概要；来源中出现的重要设置若不采用，应说明与当前需求的差异。
-read_source和read_case_configuration返回服务生成的evidence_refs；source_refs精确复制其中source_id/context/locator（引用单个属性时locator可用该属性返回的evidence_locator），再填写实际读到的stated_value。正文页段与配置节点/属性、保存值与API观察不能相互冒充；不要自己猜locator，get_case_guide导航不算设置证据。服务匹配阅读范围也不证明你抄写的值正确或可迁移，仍需逐项核对。尚未读到的候选不要填成已核实设置依据，保留gap并有针对性补读。表已保存可用get_plan_settings分页查看，save_plan会把当前版本暂存表与流程一起保存。
-用 search_cases 找相近案例概要，避免Frame等内部节点挤占发现结果；用 search_knowledge kind=manual 查接口、特征和方法定义。已选案例可 get_case_guide 获取实现流程，再用 search_knowledge 的 case_id 与 stage 定位该案例配置及关联教程，或 read_case_configuration 读取原生保存/API配置。case_id必须使用search_cases结果的精确id，不使用asset_key或文件路径。not_prepared不是无案例，可read_case_configuration按category读取配置，并读取相关教程/手册；不要因导航未准备而跳过实际配置。导航提示不算正文已读，不能直接作为配置已核实的依据。kind=all 的混合命中不能替代案例发现；相关代码可用 kind=code 补查。按工具 schema 使用 library_ids、kind 和可选 feature_branch；分支 geometry、mesh、physics、material、multiphysics、selection、study、solver、result、param、func、variable、misc 只是范围限制，不证明适用性。feature_branch 只筛已有分支标注，未标注条目（包括通用手册和模型概览）将被排除；查通用定义或案例概览时，初次默认不带分支，必要时再筛。schema要求保留字段时用 null 表示不筛分支。查询优先用短而有区分性的英文机制、接口或特征词；避免堆叠版本号、完整任务长句或多个 OR 分支，不同实施问题分开精准查询。
-以机制、目标量、接口/特征和条件共同判断相关性，不能只按标题或关键词选源。搜索命中只是候选，引用前必须 read_source 或 read_case_configuration 读取所需正文或实际设置。查看 source_context 的来源角色、所属案例、包、分支及状态等实际字段，区分通用手册、教程、模型概览、保存配置、API观察与实现代码；关联摘要也不算已读。
-有相关案例时，阅读其概览以核对目标、适用工况与建模路线，再使用get_case_guide(stage=...)、search_knowledge(case_id=...,stage=...)或read_case_configuration(category=...)读取所选路线相关环节的具体配置及必要依赖，不能把流程概要或功能名称当作可实施设置。按实际引用关系沿related_sources和配置/教程入口核对参数、函数、变量、选择集、耦合及研究/求解依赖的正文；若依赖不可读或不完整，保留缺口，不推断默认值。区分物理类比、可直接迁移设置和必须改变的条件，不能把别的案例整套接口、材料、激励或求解器套入当前任务。原生保存配置、API解析、教程描述与工程推断分别表述；preview_only 或未执行代码不冒充已核验模型。
-若结果是目录、概论、泛理论或无关领域，沿 children、parent、linked_topics 和相关案例导航到具体正文，或用更精准的英文接口名、特征名和物理术语改写查询。检查 next_offset，按需要续读；只读过的范围才称已核对。QMD 仅覆盖已登记并启用资料库中的已建索引，不能把一个试点索引当作全部手册。
-对已选路线，用适用正文核对接口/特征作用域、材料本构、激励定义、关键表达式与单位、耦合变量和方向、研究顺序及数值方法限制；特别核对局部与全局量及后处理定义的一致性。手册说明某功能存在、案例使用过某设置，都不单独证明该组合适合当前条件。
-按实施问题和剩余预算分配检索与读取，没有固定读取次数或案例数量要求。方法缺口先定位缺失环节，如产生量→接收量、作用域、表达式/单位、研究激活/顺序或成立条件，再用对应机制、接口/特征词定向补查，不用无关来源填补。没有相近案例时说明实际搜索范围、差异及缺少的依据，不凑案例、不虚构支持；尚未核实的方法保留gap及其影响，不把查文档转成用户必答问题。
-最终方案把具体主张与实际读取且当前可用的适用来源对应，逐个检查关键实现问题的配置/正文依据，缺失的继续补查或明确保留。重要差异与证据缺口影响路线时保留条件或阻塞。可采用有依据和成立条件的替代路线，但须写明改变的约束、机制或目标量定义，以及与原路线的等价性是否已证实；替代路线的依据不能冒充原方法已核实。引用数量不等于方案质量，不以删除引用掩盖关键方法未核实。"""
+RESEARCH_POLICY = """inspect_case_source 的非空XML正文页若返回 original_mph_xml 凭据，可原样用于该已读原件范围；它与保存/API配置的 case_configuration 身份不同。children元数据不授予正文信用。
+先从用户目标、已给输入和拟选路线识别需要证据判断的问题，以原文章节和案例定位为起点，按相关性缩小资料库、模块、章节和案例范围，再阅读必要正文。方法卡或检查提示只作可选导航，不是来源证据；不强制使用方法卡、构建全依赖图或遍历全部设置。
+只使用当前入口实际提供的工具及其schema。资料库范围可能已绑定并冻结，未提供范围查询或启停工具时，直接使用当前授权范围，不猜测工具或尝试改变范围。若提供get_library_scope，可先查看目录及启停状态，按相关性选择库；query是目录元数据的字面子串筛选，不是语义检索。筛选零匹配时查看global_library_count，必要时调用get_library_scope({})重新发现，不能据此声称全目录为空。仅在当前工具允许且任务需要时启用指定库，并等待成功后检索；启用与检索有先后依赖，不能并行。不得自动启用全部库。关闭库、heldout/隔离测试来源、评测答案及其他未授权来源不可读取，也不能经关联来源绕过访问边界。
+需求和范围明确后，若当前提供get_html_navigation和read_html_section，优先定位功能手册中的父接口和合理候选方法，再读取适用条件、假设及关键量传递的原始正文。结合祖先标题区分不同接口下的同名特征，只按所需问题展开parent、children、siblings及相邻章节；next_offset结束只表示当前页或锚点正文结束，不代表整章已读。不强制遍历整本，也不规定固定读取次数。
+QMD继续用于补充术语、表达式、实现代码和相近案例，或缩小手册定位范围；可将已发现的source_id交给get_html_navigation返回原生章节树。树未准备、来源没有HTML节点或入口不提供树工具时，使用当前可用的search_knowledge和read_source，不把not_prepared当作没有相关方法。树优先不禁用QMD，默认使用qmd_keyword，不自动构建向量或启用embedding。QMD仅覆盖当前授权、已登记并启用资料库的已建索引，不能把试点索引当作全部手册。功能手册树不开放模型实例教程、addins或隔离测试来源；案例仍按各自现有权限查阅。
+按工具schema用library_ids、kind及可选feature_branch缩小范围。查询优先用短而有区分性的英文机制、接口或特征词，不堆叠版本号、完整任务长句或多个OR分支，不同问题分开查询。kind=manual可查定义，kind=all可补充案例配置和关联教程；kind=case会排除手册型教程，混合命中不能替代案例概要发现。feature_branch只筛已有分支标注，未标注的通用手册和模型概览会被排除；初查定义或概览默认不带分支，schema要求保留字段时用null。结果偏题、只有目录/泛理论或无关领域时，依据实际命中改写术语、收窄库/章节/案例，或沿children、parent、linked_topics定位具体正文，不重复堆叠宽泛查询。
+用search_cases找相近案例概要，先read_source读概览判断目标、工况与方法是否适用；不适用时明确排除并说明与当前任务的差异，无需为排除而遍历配置。对相近或部分可借鉴的案例，在选路和设置迁移过程中用精确case_id调用get_case_navigation定位所需节点，按实际返回的read_requests或configuration_reads调用read_case_configuration读取实际设置；用manual_read或精确HTML节点调用read_html_section核对必要定义。case_id使用search_cases返回的精确id，不猜asset_key或路径。get_case_guide保留环节摘要入口，摘要不代表全部节点或完整依赖；工具缺失或not_prepared时，按当前提供的get_case_guide、search_knowledge(case_id/stage)等入口继续定位。若提供inspect_case_source，可直接用于原始保存结构、表达式与选择集的查证；依其schema使用返回的节点路径，逐层或按页读取原始MPH内XML，无需预建树或运行COMSOL；它只证明实际所见保存XML的原生位置和文件指纹，不授予case_configuration或API观察证据信用。已有保存/API配置可用read_case_configuration核对。原件检查与配置读取均可参与候选路线比较，不必等到路线已经选定后才使用；按当前证据问题选择合适入口。
+案例树只覆盖当前已经解析的节点，不承诺整个MPH已被完整解析，父子顺序不是物理因果图。只追踪影响所选设置的必要参数、函数、变量、选择集、材料、耦合及研究/求解依赖，不要求读取全图。confirmed仅表示配置中观察到可解析关系，ambiguous和unresolved保留待核实原因，不把未知表达式中的每个词猜作用户变量。保存配置与API观察分别表述；相关依赖不可读时保留缺口，不推断默认值。若当前工具支持，可从手册节点以get_case_navigation的implementations视图及manual_node_id反查可访问案例；关联、matched、candidate都只是候选，不证明适用性。
+以机制、目标量、接口/特征和条件共同判断相关性。搜索命中、树标题、关联摘要及get_html_navigation、get_case_navigation和get_case_guide导航都不算正文或设置证据；来源候选、父子关系、依赖边和手册匹配不证明物理有效性。引用前用read_html_section、read_source、inspect_case_source或read_case_configuration读取所需正文、原件或实际设置。查看source_context、祖先标题和实际范围，区分通用手册、教程、模型概览、保存配置、API观察与实现代码。saved_configuration正文若只是结构摘要，按configuration_hint读取实际属性；preview_only或未执行代码不能冒充已核验模型。
+引用遵循当前工具实际返回的来源身份和定位；返回服务生成的evidence_refs时，需要source_refs就精确复制其中source_id/context/locator（单个属性可用返回的evidence_locator），stated_value只填写实际读到的内容，不猜定位。read_html_section的html_section引用保留原文件指纹、锚点和实际文本范围；真实读取后可引用返回的同一source_id，无需为登记引用重复QMD读取。HTML原文、source_text页段、原始保存XML、配置属性、保存值与API观察不能相互冒充。图片和公式图只保留引用，未转录的图像不能当作已读公式。检查next_offset，按当前问题需要续读；只把实际读过的范围称为已核对，服务接受引用范围也不证明值正确或可迁移。
+用适用正文完成路线的条件约束判断：比较候选方法保留的现象、成立条件与失效条件，核对关键量从产生方到接收方的作用域、定义、方向和单位；方法存在或案例曾用过均不证明当前组合成立。选定路线后，按任务需要核对接口/特征作用域、材料本构、激励、关键表达式、耦合、研究激活/顺序、数值方法及目标量提取，使实施细则有证据支持。区分来源原值、当前输入、工程推断和未知；未核实的数值、表达式和默认值保持未知，不编数值、不照搬案例工况。网格细节与工具读取由实际几何、物理尺度及问题需要决定，不强迫调用网格工具。
+按未解决的问题与剩余预算决定补查，没有固定调用次数、案例数量或依赖覆盖要求。需要判断的条件和关键实现主张已有适用证据，或已明确剩余未知及其影响时，可结束研究；证据不足的主张保留gap，影响路线成立时给出条件或阻塞。没有相近案例时说明实际搜索范围、差异和缺少的依据，不凑案例、不虚构支持，也不把查文档变成用户必答问题。替代路线说明改变的约束、机制或目标量定义及等价性是否已证实；引用数量不等于质量，不以删除引用掩盖未核实的方法。"""
+
+_RESEARCH_MODE_FOCUS = {
+    "route": "本次聚焦路线判断：依据目标量、已给条件与已读来源比较候选路线的成立条件、失效条件、取舍和关键证据缺口。相关案例的实际实现可用于检验候选路线和关键关系；明显不适用案例可说明差异后排除。最终集中交付路线判断，不展开完整实施步骤。",
+    "implementation": "本次聚焦实施规划：形成工程师或后续编码Agent可执行的完整方案，技术路线是其中一部分。先以手册和相关案例的真实实现比较候选路线，再按实施依赖组织几何准备与简化、域/边界选择、材料和参数表达式、物理接口、激励边界、跨域耦合、网格、研究/求解、结果提取与验收。每个相关环节说明操作对象、关键设置、依赖、依据、检查与难点；说明案例设置的采用、修改或排除理由。不能用接口名或泛泛待确认替代实施细节。网格需要划分及加密策略、质量和独立性检查；尺寸或阈值未知时给出确定方法、参数化条件和影响，不编数值。未运行求解不等于可以省略实施设计。",
+}
 
 LIBRARY_SCOPE_DESCRIPTION = (
     "查询资料库目录、分组、启停状态及轻量根路径；包括已关闭库，不读正文或索引。query是元数据字面子串筛选；"
@@ -49,15 +56,15 @@ REVIEW_PLAN_DESCRIPTION = (
 )
 
 SEARCH_KNOWLEDGE_DESCRIPTION = (
-    "检索本地手册、案例配置及代码。找案例概要优先search_cases；选定后可用case_id与stage限定该案例配置和关联教程，kind=all允许两种来源。kind=manual核对通用方法；"
+    "检索当前授权范围内的本地手册、案例配置及代码。提供HTML工具时，功能手册优先用get_html_navigation定位父接口并用read_html_section读原文；本工具补充术语、表达式和案例，或在树不可用时回退。可用命中source_id返回HTML树。案例先search_cases并read_source读概览判断适用性；对相近案例可在选路和实施设计过程中用get_case_navigation定位配置，或用inspect_case_source直接检查原始保存结构，get_case_guide保留摘要。可用case_id与stage限定所需配置和关联教程，kind=all允许两种来源。kind=manual核对通用方法；"
     "可选feature_branch仅筛已有分支标注，未标注的通用手册/模型概览也会排除；查定义/概览初次默认不带分支，必要时再筛。"
-    "优先短而有区分性的英文机制/接口词，避免堆叠版本号、任务长句或多个OR分支。library_ids限定已启用库。默认qmd_keyword，项目术语扩展后以OR执行一次BM25；qmd_vector需显式选择，默认关闭。QMD仅覆盖已登记并启用库的已建索引；不可用时明确报告。"
-    "结果只是候选，source_context提示来源角色和所属案例，不能视为适用或已读；引用前必须read_source或read_case_configuration核对实际设置。"
+    "优先短而有区分性的英文机制/接口词，避免堆叠版本号、任务长句或多个OR分支；结果偏题时改写查询并收窄范围。library_ids限定已启用库。默认qmd_keyword，项目术语扩展后以OR执行一次BM25；qmd_vector需显式选择，默认关闭。QMD仅覆盖已登记并启用库的已建索引；不可用时明确报告。"
+    "结果只是候选，source_context提示来源角色和所属案例，不能视为适用或已读；引用前须用read_html_section、read_source、inspect_case_source或read_case_configuration核对实际正文、原件或设置。"
 )
 READ_SOURCE_DESCRIPTION = (
-    "分页读取已发现来源及其source_context、目录父子和链接导航。案例先读概览判断适用条件，"
+    "分页读取已发现来源及其source_context、目录父子和链接导航。功能手册可用source_id转get_html_navigation，再read_html_section核对父接口原文；无树时继续按本工具分页。案例先读概览判断适用条件，"
     "saved_configuration正文可能只是简短结构摘要，须检查configuration_hint并用read_case_configuration读取实际属性；不要将模板摘要作为设置原值。"
-    "再读相关配置和必要依赖；若是目录/概论，沿children/parent/linked_topics找具体正文。"
+    "相关案例的原件和配置可在选路及实施设计过程中查证关键机制、作用域与设置迁移，不适用案例可说明差异后排除；若是目录/概论，沿children/parent/linked_topics找具体正文。"
     "related_sources只是依赖摘要，需另行read_source核实；检查next_offset，未读范围不能称已核对。"
 )
 
@@ -66,11 +73,22 @@ def text_sha256(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def research_instructions(task_mode="implementation"):
+    """Return the canonical research policy once, with a task-specific focus.
+
+    This research-only text is safe to reuse in read-only route transports; it
+    does not include the product's plan-writing or submission contract.
+    """
+    if task_mode not in _RESEARCH_MODE_FOCUS:
+        raise ValueError("task_mode must be 'route' or 'implementation'")
+    return RESEARCH_POLICY + "\n\n" + _RESEARCH_MODE_FOCUS[task_mode]
+
+
 def load_planner_instructions(path):
     """Render the portable product template with the canonical shared policy."""
     template = Path(path).read_text(encoding="utf-8")
     for marker, value in ((COMMON_POLICY_MARKER, COMMON_PLANNING_POLICY),
-                          (RESEARCH_POLICY_MARKER, RESEARCH_POLICY)):
+                          (RESEARCH_POLICY_MARKER, research_instructions())):
         if template.count(marker) != 1:
             raise ValueError("The planner template must contain each shared policy marker exactly once")
         template = template.replace(marker, value)

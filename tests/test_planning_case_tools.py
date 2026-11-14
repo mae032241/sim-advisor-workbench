@@ -40,6 +40,33 @@ def configuration(fixture, *, bound=True, **options):
     return fixture.tools.call_public('read_case_configuration', args)
 
 
+def test_case_overview_hands_off_to_registered_offline_original_tool(case_tools):
+    fixture = case_tools
+    overview = fixture.tools.call_public('read_source', {
+        'session_id': fixture.sid, 'id': fixture.overview['id'], 'length': 500})
+    action = overview['case_reading']['original']
+    assert action['tool'] == 'inspect_case_source'
+    assert action['arguments']['case_id'] == fixture.overview['id']
+    # Use a fresh session: a raw XML read must not invent parsed/API credit.
+    sid = fixture.sessions.create('Only inspect original XML.', None)['id']
+    result = fixture.tools.call_public(action['tool'], dict(action['arguments'], session_id=sid))
+    assert result['basis'] == 'original_saved_xml' and result['raw_result']['items']
+    assert result['is_read_evidence'] is False
+    assert fixture.tools.read_sources(sid) == []
+    page = fixture.tools.call_public('inspect_case_source', {
+        'session_id': sid, 'case_id': fixture.overview['id'], 'view': 'xml', 'length': 400})
+    assert page['is_read_evidence'] is True and page['raw_result']['text']
+    assert page['evidence_refs'][0]['context'] == 'original_mph_xml'
+    assert fixture.tools.read_sources(sid) == [fixture.overview['id']]
+    assert page['evidence_refs'][0] in fixture.tools._entry(sid)['record']['read_contexts']
+    assert not any(ref['context'] == 'case_configuration' for ref in page['evidence_refs'])
+    import json
+    assert len(json.dumps(page, ensure_ascii=False).encode('utf-8')) <= 7000
+    fixture.store.set_enabled('cases', False)
+    with pytest.raises(PermissionError):
+        fixture.tools.call_public(action['tool'], dict(action['arguments'], session_id=sid))
+
+
 def assert_no_citation_credit(fixture):
     assert fixture.tools.read_sources(fixture.sid) == []
     args = payload(fixture.task)

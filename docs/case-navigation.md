@@ -7,7 +7,7 @@
 1. `get_library_scope` 查看范围，按需启用有关资料库；等待启用成功后再检索。
 2. `search_cases` 只搜索模型概要，使用返回的精确 `id` 作为 `case_id`。
 3. `read_source` 读取选中概要，初步核对目标、条件和接口。
-4. `get_case_guide(case_id)` 获取短流程，用 `stage` 展开单个环节。
+4. `get_case_navigation(case_id)` 逐层查看已解析节点、依赖与手册候选；`get_case_guide(case_id)` 保留短环节摘要。详见 [案例树导航](case-tree-navigation.md)。
 5. `search_knowledge` 可传 `case_id` 和 `stage`，搜索该版本的配置与关联教程。`kind=all` 可同时包含配置和教程；`kind=case` 会排除手册类型的教程。
 6. `read_case_configuration` 读取实际保存配置或 API 观察。默认一次读取一个节点；准确的 `compact:node/N` 可精确定位。`source=saved` 与 `source=api` 是独立证据范围。
 7. 对新任务独立查阅手册，核对方法条件、输入、耦合和迁移边界，再形成方案。

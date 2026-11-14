@@ -197,10 +197,13 @@ test('server-owned bound catalog registers contract and future tools with their 
   for (const definition of definitions) assert.equal(f.agent.ctx.toolsMap.has(definition.name), false);
 });
 
-test('legacy catalog fallback exposes contract while excluding mailbox and unknown tools', async t => {
-  const f = await fixture(t, {extraTools: ['get_tool_contract', 'register_external_agent', 'future_planning_tool']});
+test('legacy catalog fallback discovers optional navigation and contract while excluding mailbox and unknown tools', async t => {
+  const f = await fixture(t, {extraTools: ['get_tool_contract', 'get_html_navigation', 'read_html_section', 'get_case_navigation', 'register_external_agent', 'future_planning_tool']});
   await f.call(f.agent, 'bind_workbench', {url: f.url(SID_A)});
   assert.equal(f.agent.ctx.toolsMap.has('get_tool_contract'), true);
+  assert.equal(f.agent.ctx.toolsMap.has('get_html_navigation'), true);
+  assert.equal(f.agent.ctx.toolsMap.has('read_html_section'), true);
+  assert.equal(f.agent.ctx.toolsMap.has('get_case_navigation'), true);
   assert.equal(f.agent.ctx.toolsMap.has('register_external_agent'), false);
   assert.equal(f.agent.ctx.toolsMap.has('future_planning_tool'), false);
 });

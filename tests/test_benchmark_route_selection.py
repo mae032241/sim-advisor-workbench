@@ -245,6 +245,22 @@ def test_natural_completed_route_needs_no_saved_plan_and_submits_one_cli_message
     assert 'PRIVATE_STDERR_MUST_NOT_LEAK' not in (tmp_path / 'run.json').read_text(encoding='utf-8')
 
 
+def test_implementation_task_preserves_full_final_document_without_route_only_label(tmp_path):
+    product = Product()
+    document = {'chosen_route': {'name': 'Synthetic method'},
+                'implementation_plan': [{'stage': 'mesh', 'actions': ['partition'],
+                                         'key_settings': [{'value': None, 'determine_by': 'convergence study'}]}]}
+    product.reply = json.dumps(document)
+    args = arguments(tmp_path)
+    args.task_mode = 'implementation'
+    run = experiment.run_turn(args, 'Produce a full implementation plan.', runner=product.runner, http_reader=product.read)
+    assert run['status'] == 'complete' and run['natural_termination']
+    assert run['schema'] == 'implementation-planning-run/v1'
+    assert run['route_selection_read_only'] is False and run['implementation_planning_read_only'] is True
+    assert json.loads((tmp_path / 'visible-final.json').read_text(encoding='utf-8')) == document
+    assert product.calls.count('message') == 1 and 'interrupt' not in product.calls
+
+
 @pytest.mark.parametrize('terminal', ['failed', 'interrupted'])
 def test_natural_terminal_failures_are_retained_without_retry_or_preemption(tmp_path, terminal):
     product = Product(terminal=terminal)

@@ -56,6 +56,15 @@ def reconstruct(adapter, handle, path=""):
         offset = page["next_offset"]
 
 
+def test_case_reading_handoff_survives_bounded_source_projection():
+    actions = {"original": {"tool": "inspect_case_source", "arguments": {"case_id": "case-one", "limit": 4}}}
+    reader, _ = source_reader("Exact body " * 200, extra={"type": "model_case", "case_reading": actions})
+    adapter = BoundedKnowledge(reader)
+    result = adapter.call("read_source", {"id": "case-one", "length": 1000})
+    assert result["case_reading"] == actions
+    assert result["text"] == ("Exact body " * 200)[:1000]
+
+
 def test_long_source_pages_are_complete_original_text_and_truthful_refs():
     text = ("中文🙂 and quoted \"text\"\\ " * 700) + "tail"
     reader, calls = source_reader(text, extra={"data": {"huge": "native metadata" * 2000}})

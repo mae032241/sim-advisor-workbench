@@ -1,6 +1,6 @@
 # DSH 接入工作台
 
-推荐使用完整的 `@local/sim-advisor-workbench` 插件，当前版本 **0.2.63**，以 [package.json](../integrations/dsh-sim-workbench/package.json) 为准。构建后通过 DSH 官方插件管理器安装 `.tgz`，步骤见 [插件打包](dsh-plugin-package.md)。不要直接安装插件源码目录。DSH 与所用模型服务需自行安装、登录和配置。
+推荐使用完整的 `@local/sim-advisor-workbench` 插件，当前版本 **0.2.68**，以 [package.json](../integrations/dsh-sim-workbench/package.json) 为准。构建后通过 DSH 官方插件管理器安装 `.tgz`，步骤见 [插件打包](dsh-plugin-package.md)。不要直接安装插件源码目录。DSH 与所用模型服务需自行安装、登录和配置。
 
 ## 在当前 DSH 会话使用
 
@@ -31,3 +31,9 @@ Bridge 另提供 `bind_workbench({url})` 绑定已有方案，以及状态和解
 数据目录与插件安装目录分开。迁移前停止使用该数据目录的服务和 CLI，再完整复制数据目录并重新配置依赖和原始资料位置；插件设置中切换目录不会替用户搬迁数据。原始来源改位置可使用 `library_cli.py rebind`。
 
 工具参数以安装版本返回的 schema 为准。源码实现见 [完整插件](../integrations/dsh-sim-workbench/index.js)、[Bridge](../integrations/dsh-workbench-bridge/index.js) 与 [接口约定](../CONTRACT.md)。
+
+## 0.2.68 更新
+
+采用远端工作台的网页布局与 Agent 长轮询通信：状态变化唤醒等待，仅传递完成回合的新增回复，页面隐藏或断开后停止对应刷新。保留资料库管理、章节树和案例工具。
+
+`inspect_case_source` 按精确案例 ID 离线读取已登记 MPH 原件的保存 XML，无需 COMSOL；案例概览返回可用的原件与配置读取入口。保存值不等同于当前激活状态或求解验证。章节导航明确标题匹配方式与收窄建议。完整实施规划使用共享研究规范与任务模板，CLI 与工具说明保持一致。旧离线依赖包可继续使用，不新增权重或默认 embedding。

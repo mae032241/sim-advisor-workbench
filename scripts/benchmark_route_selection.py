@@ -267,7 +267,7 @@ def _authored_snapshot(session):
     )}
 
 
-def run_turn(args, message, *, cancel_event=None, runner=None, http_reader=None):
+def run_turn(args, message, *, cancel_event=None, runner=None, http_reader=None, allowed_conditions=None):
     """One actual CLI message, natural completion, collection and owned cleanup."""
     parsed = urlsplit(args.url)
     if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', 'localhost', '::1'}
@@ -275,7 +275,11 @@ def run_turn(args, message, *, cancel_event=None, runner=None, http_reader=None)
         raise ValueError('A loopback product service is required')
     if not re.fullmatch(r'[a-f0-9]{32}', args.session_id) or args.timeout <= 0:
         raise ValueError('A prepared task and positive timeout are required')
-    if args.condition not in CONDITIONS or not isinstance(message, str) or not 1 <= len(message.strip()) <= 12000:
+    accepted_conditions = CONDITIONS if allowed_conditions is None else tuple(allowed_conditions)
+    if (not accepted_conditions or any(not isinstance(item, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', item)
+                                      for item in accepted_conditions)
+            or args.condition not in accepted_conditions or not isinstance(message, str)
+            or not 1 <= len(message.strip()) <= 12000):
         raise ValueError('A known condition and bounded common message are required')
     destination = Path(args.destination)
     if destination.exists() and any(destination.iterdir()):
@@ -300,10 +304,21 @@ def run_turn(args, message, *, cancel_event=None, runner=None, http_reader=None)
         'route_selection_read_only': True, 'natural_termination': False,
         'tool_audit_path': str(getattr(args, 'audit_path', '') or '') or None,
         'cli_calls': [], 'cleanup_errors': [], 'started_at': now()}
+    if getattr(args, 'task_mode', 'route') == 'implementation':
+        report.update(schema='implementation-planning-run/v1', task_mode='implementation',
+                      route_selection_read_only=False, implementation_planning_read_only=True)
 
     def checkpoint():
         report['seconds'] = round(time.monotonic() - started, 3)
-        write(destination / 'run.json', report)
+        try:
+            write(destination / 'run.json', report)
+        except OSError as error:
+            # A progress observer/antivirus can momentarily lock run.json on
+            # Windows. Do not interrupt a healthy turn over a checkpoint.
+            warnings = report.setdefault('checkpoint_warnings', [])
+            if len(warnings) < 8:
+                warnings.append({'type': type(error).__name__, 'errno': error.errno,
+                                 'winerror': getattr(error, 'winerror', None)})
 
     def remaining():
         if cancel_event is not None and cancel_event.is_set():

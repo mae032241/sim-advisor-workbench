@@ -4,6 +4,28 @@ from __future__ import annotations
 import copy
 
 
+def html_tree_status(source: dict) -> dict:
+    """Small published-navigation status; never inspect source HTML here."""
+    source = source if isinstance(source, dict) else {}
+    counts = {key: max(0, value) if type(value) is int else 0 for key in (
+        "tree_count", "enabled_tree_count", "available_tree_count", "node_count", "document_count", "package_count")
+        for value in (source.get(key),)}
+    ready = bool(source.get("ready") and counts["enabled_tree_count"])
+    if ready:
+        label, detail = "主导航就绪", "规划优先按章节定位接口与适用条件，再读取原文；QMD 补充术语、表达式和案例。读取时核对当前库权限和原文。"
+    elif counts["tree_count"] and not counts["enabled_tree_count"]:
+        label, detail = "已有目录 · 资料库未启用", "启用对应手册库后可参与规划，关闭的库及其旧来源 ID 不可新读。"
+    elif source.get("state") in {"error", "failed", "unavailable"} or counts["tree_count"] and not counts["available_tree_count"]:
+        label, detail = "目录待修复", "章节树当前不可用；可在资料库中补建目录，规划可继续用 QMD 补充检索。"
+    else:
+        label, detail = "尚未构造章节树", "支持的 HTML 手册建库时自动构造；已有库可补建章节树。没有原生目录的资料继续使用 QMD。"
+    result = {"available": ready, "installed": True, "mode": "native-html-chapters", "state": source.get("state", "not_prepared"),
+              "status_label": label, "detail": detail, **counts}
+    if source.get("error"):
+        result["error"] = str(source["error"])[:500]
+    return result
+
+
 def qmd_status(legacy: dict, indexes: dict) -> dict:
     dependencies = indexes.get("dependencies", {})
     installed = bool(legacy.get("installed") or legacy.get("available") or dependencies.get("qmd_available"))
@@ -45,5 +67,5 @@ def services_status(corpus: dict, parser: dict, planner: dict) -> dict:
     planner = copy.deepcopy(planner)
     if planner.get("mode") == "disabled":
         planner.update(status_label="托管后端已关闭", detail="当前服务不启动工作台托管 Agent。外部 DSH 等 Agent 是否连接，取决于当前方案的会话绑定。")
-    return {"sim_cli": parser, "pageindex": pageindex,
+    return {"sim_cli": parser, "html_tree": html_tree_status(corpus.get("html_tree", {})), "pageindex": pageindex,
             "qmd": qmd_status(backends.get("qmd", {}), corpus.get("library_indexes", {})), "planner": planner}

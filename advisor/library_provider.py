@@ -9,6 +9,7 @@ from .library_store import MANUAL_TYPES, LibraryStore
 from .case_metadata import normalize_feature_branch
 from .library_search import LibrarySearch, LibraryVisibilityError
 from .query_terms import normalize_mode
+from .html_tree_tools import HtmlTreeTools, is_html_source_id, html_locator_matches
 
 _CONTEXT_UNSET = object()
 
@@ -22,6 +23,7 @@ class LibraryKnowledgeProvider:
     def __init__(self, legacy, data_dir):
         self.legacy = legacy
         self.store = LibraryStore(data_dir)
+        self.html_trees = HtmlTreeTools(self.store)
 
     def __getattr__(self, key):
         return getattr(self.legacy, key)
@@ -37,6 +39,7 @@ class LibraryKnowledgeProvider:
 
     def status(self, *, summary=False):
         status = self.legacy.status()
+        status["html_tree"] = self.html_trees._repo().summary()
         libraries = self._libraries()
         enabled = [library for library in libraries if library["enabled"] and library["deleted_at"] is None]
         status["libraries"] = [library for library in libraries if library["deleted_at"] is None]
@@ -50,7 +53,8 @@ class LibraryKnowledgeProvider:
             status["library_indexes"] = self.store.index_status(summary=True) if summary else self.store.index_status()
         except (ImportError, OSError, ValueError) as exc:
             status["library_indexes"] = {"ready": False, "detail": str(exc)}
-        status["ready"] = bool(status["library_indexes"].get("modes", {}).get("qmd_keyword", {}).get("ready"))
+        status["ready"] = bool(status["library_indexes"].get("modes", {}).get("qmd_keyword", {}).get("ready")
+                               or status["html_tree"].get("ready"))
         status["retrieval_backend"] = "qmd_keyword"
         return status
 
@@ -357,6 +361,8 @@ class LibraryKnowledgeProvider:
         return self._legacy_visible(document, blocked, prefixes)
 
     def _read_document(self, citation_id):
+        if is_html_source_id(citation_id):
+            return self.html_trees.get_document(citation_id)
         policy, _, heldout_ids = self._evaluation_legacy_scope()
         if policy.blocks_identity(citation_id) or citation_id in heldout_ids:
             raise PermissionError("该来源属于管理员保留的测试集，Agent 不能检索或读取。")
@@ -374,6 +380,8 @@ class LibraryKnowledgeProvider:
         if not isinstance(citation_id, str) or not citation_id:
             return False
         try:
+            if is_html_source_id(citation_id):
+                return self.html_trees.source_available(document)
             if isinstance(document, dict):
                 self.store.require_not_heldout(citation_id, document)
                 context = document.get("data", {}).get("search_context")
@@ -430,6 +438,10 @@ class LibraryKnowledgeProvider:
         return document
 
     def related_sources(self, citation_id, *, limit=8):
+        if is_html_source_id(citation_id):
+            if not self.html_trees.source_available(citation_id):
+                raise PermissionError("Native HTML source is no longer readable")
+            return []
         source = self._read_document(citation_id)
         if source is None or source.get("library_id") is None:
             return []
@@ -441,6 +453,16 @@ class LibraryKnowledgeProvider:
 
     def validate_source(self, document):
         citation_id = document.get("id")
+        if is_html_source_id(citation_id):
+            if not self.html_trees.source_available(document):
+                return False
+            try:
+                current = self.html_trees.get_document(citation_id, metadata_only="text" not in document)
+            except (KeyError, ValueError, OSError):
+                return False
+            if not current or any(document.get(key) != value for key, value in current.items()):
+                return False
+            return all(html_locator_matches(current, ref) for ref in document.get("read_evidence_refs", []))
         if str(citation_id).startswith("lo-"):
             saved = self.store.get(citation_id)
             if not saved:

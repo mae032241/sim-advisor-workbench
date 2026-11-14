@@ -22,7 +22,7 @@ PLUGIN_FILES = ("package.json", "index.js", "service.js", "dependency-profile.js
                 "config.js", "config-ui.js", "client.js", "cordis.patch.yml", "icon.svg", "README.md")
 RUNTIME_SCRIPTS = ("ingest_docs.py", "pageindex_bridge.py", "compare_offline_mph.py", "mph_extract/ReadMph.java", "mph_extract/ReadMphBatch.java", "enrich_model_api.py",
                    "verify_offline_qmd.mjs", "remove_legacy_object_fts.py", "slim_object_index.py", "normalize_tutorials.py", "verify_tutorial_normalization.py", "reclaim_tutorial_storage.py", "merge_qmd_indexes.py",
-                   "RESEARCH_PLANNER.md", "RETRIEVAL.md", "select_evaluation_cases.py", "configure_evaluation_set.py", "build_case_guides.py", "enrich_case_contexts.py", "enrich_all_case_contexts.py")
+                   "RESEARCH_PLANNER.md", "RETRIEVAL.md", "select_evaluation_cases.py", "configure_evaluation_set.py", "build_html_tree.py", "build_case_tree.py", "build_case_guides.py", "enrich_case_contexts.py", "enrich_all_case_contexts.py")
 
 
 def collect_sources() -> dict[str, Path]:
@@ -55,7 +55,12 @@ def build(destination: Path) -> dict:
     files = collect_sources()
     required = {"runtime/run.py", "runtime/library_cli.py", "runtime/web/index.html",
                 "runtime/prompts/comsol_planner.v1.txt", "runtime/scripts/mph_extract/ReadMph.java",
-                "runtime/advisor/library_store.py", "bridge/index.js", "service.js", "dependency-profile.js", "offline-setup.js",
+                "runtime/advisor/library_store.py", "runtime/advisor/html_tree.py", "runtime/advisor/html_tree_tools.py",
+                "runtime/advisor/html_tree_store.py", "runtime/advisor/research_policy.py", "runtime/scripts/build_html_tree.py",
+                "runtime/advisor/case_tree.py", "runtime/advisor/case_manual_links.py", "runtime/scripts/build_case_tree.py",
+                "runtime/advisor/case_original_tools.py", "runtime/advisor/raw_resource_tools.py",
+                "runtime/docs/case-tree-navigation.md",
+                "runtime/docs/html-manual-tree.md", "bridge/index.js", "service.js", "dependency-profile.js", "offline-setup.js",
                 "config.js", "config-ui.js", "client.js", "locale/zh.json"}
     if not required.issubset(files):
         raise ValueError("Incomplete runtime resource list")

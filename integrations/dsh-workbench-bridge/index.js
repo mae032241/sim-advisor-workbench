@@ -6,7 +6,7 @@ export const inject = ['agents', 'tools', 'systemPrompt'];
 // Compatibility only: older servers ignore ?bound=true and return mailbox
 // administration tools too. New servers own the complete bound-tool catalog.
 const LEGACY_PLANNING_TOOLS = ['get_task_context', 'search_knowledge', 'search_cases', 'get_case_guide', 'read_case_configuration', 'read_source', 'save_plan', 'update_steps', 'get_library_scope', 'set_libraries_enabled'];
-const LEGACY_OPTIONAL_TOOLS = ['get_plan_draft', 'repair_plan_draft', 'review_plan', 'save_plan_settings', 'get_plan_settings', 'get_mechanism_checks', 'get_tool_contract'];
+const LEGACY_OPTIONAL_TOOLS = ['get_plan_draft', 'repair_plan_draft', 'review_plan', 'save_plan_settings', 'get_plan_settings', 'get_mechanism_checks', 'get_tool_contract', 'get_html_navigation', 'read_html_section', 'get_case_navigation', 'inspect_case_source'];
 const DISPLAY_LIMIT = 15900;
 const OUTPUT = { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] };
 const objectSchema = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });

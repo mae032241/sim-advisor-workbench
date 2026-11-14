@@ -35,9 +35,9 @@ class PlanningServiceTests(unittest.TestCase):
 
     def test_public_schemas_are_backend_neutral_and_scope_is_explicit(self):
         definitions={s["name"]:s for s in tool_definitions()}
-        self.assertEqual(set(definitions),{"get_task_context","search_knowledge","search_cases","get_case_guide","read_case_configuration","read_source","save_plan","update_steps","get_library_scope","set_libraries_enabled","get_plan_draft","repair_plan_draft","review_plan","save_plan_settings","get_plan_settings","get_mechanism_checks","get_tool_contract"})
+        self.assertEqual(set(definitions),{"get_task_context","search_knowledge","search_cases","get_case_guide","get_case_navigation","read_case_configuration","read_source","get_html_navigation","read_html_section","save_plan","update_steps","get_library_scope","set_libraries_enabled","get_plan_draft","repair_plan_draft","review_plan","save_plan_settings","get_plan_settings","get_mechanism_checks","get_tool_contract"})
         for name,definition in definitions.items():
-            self.assertEqual("session_id" in definition["inputSchema"]["required"],name not in {"search_knowledge","search_cases","get_case_guide","read_case_configuration","read_source","get_library_scope","set_libraries_enabled","get_mechanism_checks","get_tool_contract"})
+            self.assertEqual("session_id" in definition["inputSchema"]["required"],name not in {"search_knowledge","search_cases","get_case_guide","get_case_navigation","read_case_configuration","read_source","get_html_navigation","read_html_section","get_library_scope","set_libraries_enabled","get_mechanism_checks","get_tool_contract"})
         self.assertIn("get_plan",{s["name"] for s in tool_definitions(bound=True,include_alias=True)})
         self.assertNotIn("session_id",tool_definitions(bound=True)[0]["inputSchema"]["properties"])
 

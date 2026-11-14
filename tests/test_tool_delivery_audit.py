@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from advisor.tool_delivery_audit import audit_rollout, locate_rollout, response_sha256
 
 
@@ -67,3 +69,82 @@ def test_tool_metadata_inventory_has_separate_budget_but_not_business_reads(tmp_
     rows[1] = rows[1].replace('text(ALL_TOOLS.map(x=>x.name))', 'text(await tools.read_source({}))')
     path.write_text('\n'.join(rows), encoding='utf-8')
     assert not audit_rollout(path, 'synthetic-thread-123')['valid']
+
+
+def exec_failure_log(tmp_path, error, *, delivered=None):
+    path = make_log(tmp_path, error, kind="custom_tool_call_output")
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    rows.insert(1, {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
+        "call_id": "call-1", "input": "const card = { explanation: 'synthetic' }; text(card);"}})
+    if delivered is not None:
+        rows.append({"type": "response_item", "payload": {"type": "custom_tool_call_output",
+            "call_id": "call-recovered", "output": "Script completed\nOutput:\n" + json.dumps(delivered)}})
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    return path
+
+
+def test_explicit_exec_syntax_error_is_diagnostic_when_all_callbacks_are_visible(tmp_path):
+    value = {"source": "original callback", "next_offset": None}
+    error = "Script failed\nScript error:\nSyntaxError: Unexpected token ':'"
+    path = exec_failure_log(tmp_path, error, delivered=value)
+    original = path.read_bytes()
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=[response_sha256(value)])
+    assert result["schema"] == "tool-delivery-audit/v2"
+    assert result["valid"] and result["issues"] == []
+    assert len(result["execution_errors"]) == 1
+    assert result["execution_errors"][0]["code"] == "recoverable_syntax_error"
+    assert result["execution_errors"][0]["error"] == error
+    assert path.read_bytes() == original
+
+
+def test_syntax_error_after_unprinted_callback_remains_invalid(tmp_path):
+    value = {"source": "callback received but never printed"}
+    path = exec_failure_log(tmp_path, "Script failed\nScript error:\nSyntaxError: Unexpected token in JSON.parse")
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=[response_sha256(value)])
+    assert not result["valid"] and result["execution_errors"] == []
+    assert {issue["code"] for issue in result["issues"]} == {"delivery_warning", "callback_response_not_fully_delivered"}
+
+
+def test_exec_syntax_error_in_separate_content_block_is_recoverable(tmp_path):
+    value = {"source": "complete callback"}
+    blocks = [{"type": "text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
+              {"type": "text", "text": "Script error:\nSyntaxError: Unexpected token ')'"}]
+    path = exec_failure_log(tmp_path, blocks, delivered=value)
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=[response_sha256(value)])
+    assert result["valid"] and result["issues"] == []
+    assert result["execution_errors"][0]["code"] == "recoverable_syntax_error"
+    assert result["execution_errors"][0]["error"] == "\n".join(block["text"] for block in blocks)
+
+
+@pytest.mark.parametrize("expected", [None, []])
+def test_syntax_error_without_expected_callback_hashes_is_not_exempt(tmp_path, expected):
+    path = exec_failure_log(tmp_path, "Script failed\nScript error:\nSyntaxError: Unexpected token ':'")
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=expected)
+    assert not result["valid"] and result["execution_errors"] == []
+    assert result["issues"][0]["code"] == "delivery_warning"
+
+
+@pytest.mark.parametrize("error", ["Script failed\nScript error:\nRuntimeError: failed execution",
+    "Script failed\nScript error:\nSyntaxError: unexpected token\nRuntimeError: failed host"])
+def test_runtime_errors_stay_invalid_even_when_callbacks_match(tmp_path, error):
+    value = {"source": "fully visible"}
+    path = exec_failure_log(tmp_path, error, delivered=value)
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=[response_sha256(value)])
+    assert not result["valid"] and result["execution_errors"] == []
+    assert result["issues"][0]["code"] == "delivery_warning"
+
+
+def test_syntax_diagnostic_cannot_hide_real_truncation_in_same_exec_output(tmp_path):
+    value = {"source": "fully visible"}
+    error = "Script failed\nScript error:\nSyntaxError: unexpected token\nWarning: truncated output"
+    path = exec_failure_log(tmp_path, error, delivered=value)
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=[response_sha256(value)])
+    assert not result["valid"]
+    assert any(issue.get("warning") == "Warning: truncated output" for issue in result["issues"])
+
+
+def test_syntaxerror_text_outside_an_exec_call_is_not_exempt(tmp_path):
+    value = {"source": "fully visible"}
+    path = make_log(tmp_path, "Script failed\nScript error:\nSyntaxError: unexpected token\n" + json.dumps(value))
+    result = audit_rollout(path, "synthetic-thread-123", expected_response_sha256=[response_sha256(value)])
+    assert not result["valid"] and result["execution_errors"] == []

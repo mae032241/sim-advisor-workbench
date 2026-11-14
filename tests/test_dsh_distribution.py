@@ -15,6 +15,31 @@ builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 
 
+def test_html_tree_release_sources_are_complete_without_building_archive():
+    sources = builder.collect_sources()
+    required = {'runtime/advisor/html_tree.py', 'runtime/advisor/html_tree_tools.py',
+                'runtime/advisor/html_tree_store.py', 'runtime/advisor/research_policy.py',
+                'runtime/scripts/build_html_tree.py', 'runtime/docs/html-manual-tree.md',
+                'runtime/prompts/comsol_planner.v1.txt', 'bridge/index.js'}
+    assert required.issubset(sources)
+    assert all(sources[name].is_file() for name in required)
+    assert 'runtime/scripts/benchmark_html_tree.py' not in sources
+    assert not any(name.endswith(('.sqlite3', '.mph', '.pdf', '.gguf')) for name in sources)
+    manifest = json.loads((builder.BUNDLE / 'package.json').read_text(encoding='utf-8'))
+    assert manifest['version'] == '0.2.68' and not manifest.get('dependencies')
+    assert manifest['engines']['node'] == '>=24.9.0'
+
+
+def test_case_tree_source_manifest_includes_algorithms_and_no_local_navigation_data():
+    sources = builder.collect_sources()
+    required = {'runtime/advisor/case_tree.py', 'runtime/advisor/case_manual_links.py',
+                'runtime/scripts/build_case_tree.py', 'runtime/docs/case-tree-navigation.md'}
+    assert required.issubset(sources)
+    assert all(sources[name].is_file() for name in required)
+    assert not any(name.endswith(('.sqlite3', '.mph', '.gguf')) for name in sources)
+    assert 'runtime/scripts/benchmark_route_catalog.py' not in sources
+
+
 def test_distribution_is_deterministic_complete_and_has_no_user_state(tmp_path):
     first = builder.build(tmp_path / "first")
     second = builder.build(tmp_path / "second")

@@ -18,6 +18,8 @@ _WARNINGS = re.compile(
     r"Warning:\s*truncated output|Output exceeded[^\n]*truncat|"
     r"Tool result exceeded the runtime limit|Too many concurrent tool calls|"
     r"code-mode host is disabled|Script failed(?:\r?\n|$)", re.IGNORECASE)
+_SYNTAX_ERROR = re.compile(r"(?:^|\r?\n)(?:Script error:\s*)?SyntaxError\b")
+_RUNTIME_ERROR = re.compile(r"\bRuntimeError\b")
 _OUTPUT_TYPES = {"custom_tool_call_output", "function_call_output", "tool_call_output",
                  "dynamic_tool_call_output"}
 
@@ -83,8 +85,8 @@ def audit_rollout(path, expected_thread_id, max_output_bytes=8192, require_outpu
                   expected_response_sha256=None):
     path = Path(path)
     raw = path.read_bytes()
-    issues, outputs = [], []
-    observed_thread, delivered, inventory_calls = None, Counter(), set()
+    issues, outputs, syntax_failures, execution_errors = [], [], [], []
+    observed_thread, delivered, inventory_calls, exec_calls = None, Counter(), set(), set()
     for number, line in enumerate(raw.decode("utf-8").splitlines(), 1):
         if not line.strip():
             continue
@@ -98,6 +100,7 @@ def audit_rollout(path, expected_thread_id, max_output_bytes=8192, require_outpu
             observed_thread = payload.get("id")
             continue
         if record.get("type") == "response_item" and payload.get("type") == "custom_tool_call" and payload.get("name") == "exec":
+            exec_calls.add(payload.get("call_id"))
             script = payload.get("input", "")
             if isinstance(script, str) and 'ALL_TOOLS' in script and not re.search(r"\btools\s*(?:\.|\[)", script):
                 inventory_calls.add(payload.get('call_id'))
@@ -113,9 +116,19 @@ def audit_rollout(path, expected_thread_id, max_output_bytes=8192, require_outpu
         budget = max(max_output_bytes, 16384) if inventory else max_output_bytes
         row = {"line": number, "call_id": payload.get("call_id"), "type": payload["type"],
                "text_bytes": size, 'metadata_inventory': inventory, 'byte_budget': budget}
-        warning = next((match.group(0) for text in texts if (match := _WARNINGS.search(text))), None)
-        if warning:
-            issues.append({"code": "delivery_warning", "line": number, "warning": warning})
+        execution_text = "\n".join(texts)
+        for text in texts:
+            for match in _WARNINGS.finditer(text):
+                warning = match.group(0)
+                if (warning.lower().startswith("script failed") and payload.get("call_id") in exec_calls
+                        and _SYNTAX_ERROR.search(execution_text) and not _RUNTIME_ERROR.search(execution_text)):
+                    # Decide only after all callback hashes have been checked.
+                    # A parse failure can happen after a callback was received
+                    # but before it was printed, which is still lost delivery.
+                    syntax_failures.append({"line": number, "call_id": payload.get("call_id"),
+                                            "warning": warning, "error": execution_text})
+                else:
+                    issues.append({"code": "delivery_warning", "line": number, "warning": warning})
         if size > budget:
             issues.append({"code": "output_budget_exceeded", "line": number,
                            "bytes": size, "maximum": budget})
@@ -126,12 +139,19 @@ def audit_rollout(path, expected_thread_id, max_output_bytes=8192, require_outpu
         issues.append({"code": "wrong_thread", "expected": expected_thread_id, "observed": observed_thread})
     if require_outputs and not outputs:
         issues.append({"code": "tool_outputs_missing"})
+    missing = Counter()
     if expected_response_sha256 is not None:
         missing = Counter(expected_response_sha256) - delivered
         if missing:
             issues.append({"code": "callback_response_not_fully_delivered", "missing_count": sum(missing.values()),
                            "response_sha256": list(missing)})
-    return {"schema": "tool-delivery-audit/v1", "valid": not issues, "issues": issues,
+    for failure in syntax_failures:
+        if expected_response_sha256 and not missing:
+            execution_errors.append(dict(failure, code="recoverable_syntax_error"))
+        else:
+            issues.append(dict(failure, code="delivery_warning"))
+    return {"schema": "tool-delivery-audit/v2", "valid": not issues, "issues": issues,
+            "execution_errors": execution_errors,
             "tool_output_count": len(outputs), "max_output_bytes_observed": max(
                 (row["text_bytes"] for row in outputs), default=0),
             "output_byte_budget": max_output_bytes, "rollout_path": str(path.resolve()),

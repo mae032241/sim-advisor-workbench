@@ -1,5 +1,10 @@
 /* Scoped styles for the standalone local-library management panel. */
 /* Layout overrides for the directory browser are at the end of this file. */
+/* Local manual-tree controls adapted to the remote panel theme. */
+.lp-html-navigation{display:grid;gap:8px;padding:14px 16px;margin:16px 0;border:1px solid var(--line,#dce7cf);border-radius:7px;background:var(--teal-pale,#f9fcf3)}
+.lp-html-navigation h3,.lp-html-navigation p{margin:0}
+.lp-html-navigation h3{font-size:.8125rem;color:var(--ink,#294238)}
+.lp-html-navigation .lp-build-html-tree{justify-self:start}
 .lp-configuration{margin:17px 0 20px;padding:14px 16px;border:1px solid #dce7cf;border-radius:7px;background:#f9fcf3}
 .lp-configuration>h4{font-size:.8125rem;font-weight:600;line-height:1.8;color:#597748;margin:0 0 5px}
 .lp-configuration-form{display:grid;grid-template-columns:minmax(0,1fr) 150px auto;gap:10px;align-items:end;margin-top:13px}

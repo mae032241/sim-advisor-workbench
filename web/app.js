@@ -381,6 +381,8 @@ function systemStatusCards(status, session, agent) {
   const services = status?.services || {}, cards = [];
   const sim = services.sim_cli || {};
   cards.push({ id: "sim_cli", title: "模型解析 · sim-cli", label: sim.status_label || (sim.available === true ? "可用" : sim.available === false ? "不可用" : "状态未报告"), tone: sim.available === true ? "good" : "warn", mode: sim.mode, detail: sim.detail || "读取几何与已有模型；解析成功不代表已完成物理验证。" });
+  const htmlTree = services.html_tree || status?.corpus?.html_tree || {};
+  cards.push({ id: "html_tree", title: "手册主导航 · HTML 章节树", label: htmlTree.status_label || (htmlTree.ready ? "主导航就绪" : "尚未构造章节树"), tone: htmlTree.available === true || htmlTree.ready === true ? "good" : "neutral", mode: htmlTree.mode, detail: htmlTree.detail || "HTML 手册建库时自动构造；已有库可在资料库管理中补建。先导航并读原文，再用 QMD 补充检索。" });
   const page = services.pageindex || {}, installed = page.installed ?? (page.available === true ? true : page.mode === "not-installed" ? false : undefined);
   let pageLabel = "状态未报告", pageDetail = "可选 PDF 推理组件；普通 HTML / PDF 资料读取不依赖它。";
   if (page.available === true) pageLabel = "可用";

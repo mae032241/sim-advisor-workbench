@@ -195,7 +195,7 @@ def test_global_reindex_includes_disabled_and_soft_deleted_registry_ids(tmp_path
         def build(self, objects, **_):
             return {"modes": {}}
     with patch("advisor.library_search.LibrarySearch", Index):
-        result = store.reindex([])
+        result = store.reindex(["qmd_keyword"])
     job = store.job(result["job_id"])
     assert set(job["library_ids"]) == {first["id"], second["id"]}
 

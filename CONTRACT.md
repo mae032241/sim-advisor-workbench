@@ -13,6 +13,10 @@ HTTP、CLI、MCP、DSH 与托管模型适配器共用独立 `PlanningService`，
 | `get_task_context` | 读取方案需求、事实、回答、缺口和版本 |
 | `search_knowledge` | 按资料库、类型和可选功能分支检索 |
 | `read_source` | 分页读取原文并可关联方案证据 |
+| `get_html_navigation` | 沿原生功能手册树定位父接口与章节 |
+| `read_html_section` | 读取原始 HTML 章节并登记精确方案引用 |
+| `get_case_navigation` | 已解析案例层级、配置引用与手册候选导航 |
+| `inspect_case_source` | 按准确案例 ID 离线读取注册 MPH 原件的 XML 节点或正文小页 |
 | `save_plan` | 以当前 revision 保存完整路线设计 |
 | `update_steps` | 按已有 ID 更新局部步骤 |
 | `get_library_scope` | 查询包括关闭库在内的轻量目录 |
@@ -67,3 +71,7 @@ HTTP、CLI、MCP、DSH 与托管模型适配器共用独立 `PlanningService`，
 运行数据由 `SIM_ADVISOR_DATA` 或插件的数据目录设置管理，和源码及安装包分开。默认 QMD 关键词检索，旧 native 选择仅兼容转为 qmd_keyword，embedding 默认关闭并需手动配置。COMSOL Deep API 与可选扩展依赖用户自行提供。
 
 公开源码不包含官方资料、模型、固定测试集、benchmark 资料、索引、凭据、聊天或实验结果。测试输入由用户通过相应 `--selection`、`--scenario` 或 `--root` 参数提供。第三方 vendor 源码和原始许可证单独保留。
+
+原生 HTML 手册树由资料库管理，导航不授予正文阅读权限。在当前方案中实际读取的 `html_section` 范围可用于方案及设置表，原文、保存配置和 API 观察仍是不同范围。官方实例教程、addins 与隔离来源的边界不因树入口放开；详见 [手册树说明](docs/html-manual-tree.md)。
+
+案例层级、依赖、手册关联及反向实现候选只是元数据，不构成物理因果或有效性证明，不授予正文或原值阅读信用。案例先读概览再展开，实际值继续由配置工具读取，见 [案例树导航](docs/case-tree-navigation.md)。

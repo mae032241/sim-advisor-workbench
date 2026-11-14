@@ -7,7 +7,7 @@
   const typeLabels = { "official-manuals": "官方手册资料", "official-models": "官方模型案例", "user-manuals": "自定义手册 / 文档", "user-models": "自定义模型案例" };
   const isManual = library => ["official-manuals", "user-manuals"].includes(library?.type);
   const objectLabels = { model_case: "模型案例", saved_configuration: "保存态功能配置", method_step: "方法步骤", code_example: "代码示例", code_fragment: "代码片段", document: "资料章节", manual_section: "手册章节", manual_topic: "手册主题", api_reference: "API 参考", implementation_snippet: "实现代码片段" };
-  const stageLabels = { queued: "等待构建", scanning: "扫描绑定目录", extracting: "逐文件提取 MPH / 文档", deep_api: "补充 Deep API 观测", publishing: "发布 API 增强版本", cleaning_indexes: "回收旧索引", archiving: "归档资料对象", indexing: "构建检索索引", indexing_objects: "写入公共对象目录", indexing_keyword: "构建关键词索引", indexing_vector: "构建向量索引", cleaning_corpus: "清理临时检索语料", finished: "处理结束" };
+  const stageLabels = { queued: "等待构建", scanning: "扫描绑定目录", extracting: "逐文件提取 MPH / 文档", deep_api: "补充 Deep API 观测", publishing: "发布 API 增强版本", cleaning_indexes: "回收旧索引", archiving: "归档资料对象", html_tree: "构造 HTML 章节树", indexing: "构建检索索引", indexing_objects: "写入公共对象目录", indexing_keyword: "构建关键词索引", indexing_vector: "构建向量索引", cleaning_corpus: "清理临时检索语料", finished: "处理结束" };
   const statusLabels = { queued: "排队中", running: "处理中", cancel_requested: "正在中断", completed: "已完成", succeeded: "已完成", partial: "部分完成 · 存在资料缺口", failed: "失败", interrupted: "已中断", cancelled: "已中断" };
   const modeLabels = { qmd_keyword: "QMD 关键词索引", qmd_vector: "QMD 向量索引", pageindex: "PageIndex", keyword: "关键词索引", vector: "向量索引" };
   const vectorMode = mode => ["qmd_vector", "vector"].includes(mode);
@@ -17,7 +17,7 @@
   const jobApplies = (job, libraryId) => !libraryId || job.library_id === libraryId || list(job.library_ids).includes(libraryId);
   const count = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
   const countText = (value) => count(value) === null ? "未报告" : String(value);
-  const units = { files: "个文件", objects: "个对象", chunks: "个文本块", indexes: "个索引", cases: "个模型案例" };
+  const units = { files: "个文件", documents: "份 HTML", nodes: "个章节节点", objects: "个对象", chunks: "个文本块", indexes: "个索引", cases: "个模型案例" };
   function coverageHasGaps(value) {
     const raw = value?.raw_xml, normalized = raw?.normalization || {}, api = value?.deep_api, features = value?.saved_features;
     return ["partial", "missing", "failed", "unavailable"].includes(raw?.status) || raw?.truncated === true ||
@@ -99,6 +99,7 @@
     if (instances.has(target)) instances.get(target).destroy();
     const state = { libraries: [], evaluationSets: [], evaluationStatus: "idle", evaluationError: "", selectedEvaluation: null, jobs: [], indexes: {}, selected: null, libraryView: "current", libraryAction: null, modelSelections: new Map(), createBusy: false, buildBusy: false, searchBusy: false, destroyed: false, refreshSequence: 0, searchSequence: 0, sourceSequence: 0, configurationSequence: 0, configurationController: null, embedding: {enabled: false, configured: false, model_path: ""}, embeddingStatus: "loading", embeddingError: "", embeddingSequence: 0, embeddingController: null, embeddingSaving: false, pollTimer: null, elapsedTimer: null, polls: new Map(), pollErrors: new Map(), cancelRequests: new Map(), cancelErrors: new Map(), observations: new Map(), modeChoices: new Map() };
     state.evaluationRetrievalEnabled = false; state.evaluationAccessKnown = false; state.evaluationAccessToken = ""; state.evaluationAccessSaving = false; state.evaluationAccessError = "";
+    state.htmlTrees = {}; state.htmlTreeError = "";
     const apiBase = (options.apiBase || "").replace(/\/$/, "");
     state.libraryQuery = ""; state.libraryStatus = "all"; state.expandedGroups = new Set(["official", "custom"]);
     const requests = new Set();
@@ -180,13 +181,16 @@
     const progressBar = node("progress", "lp-progress lp-stage-progress"), progressAmount = node("p", "lp-progress-amount"), progressDetail = node("p", "lp-progress-detail"), progressFile = node("p", "lp-progress-file"), progressFilePath = node("code"), progressMetrics = node("div", "lp-progress-metrics"), progressFiles = node("span", "lp-progress-files"), progressCounts = node("span", "lp-progress-counts"), progressElapsed = node("span", "lp-progress-elapsed"), progressWarning = node("p", "lp-progress-warning"), progressIdentity = node("p", "lp-progress-identity");
     const cancelActions = node("div", "lp-progress-actions"), cancelButton = button("中断构建", "lp-button lp-cancel-build"), cancelHelp = node("p", "lp-progress-cancel-help"); cancelActions.hidden = true; cancelButton.hidden = true; cancelButton.title = "仅中断当前构建任务"; cancelButton.addEventListener("click", cancelBuild); cancelActions.append(cancelButton, cancelHelp);
     progressBar.setAttribute("aria-label", "当前阶段进度"); progressFile.append(node("span", "", "当前文件"), progressFilePath); progressMetrics.append(progressFiles, progressCounts, progressElapsed); liveProgress.append(progressHead, progressBar, progressAmount, progressDetail, progressFile, progressMetrics, progressWarning, cancelActions, progressIdentity);
-    const indexCoverage = node("p", "lp-help"), indexes = node("div", "lp-indexes"); content.append(selectedHeading, evaluationContent, libraryActions, liveProgress, bindings, indexHeading, indexCoverage, indexes);
+    const htmlNavigation = node("section", "lp-html-navigation"), htmlNavigationStatus = node("p", "lp-help lp-html-navigation-status"), buildHtmlTreeButton = button("补建章节树", "lp-button lp-button-quiet lp-build-html-tree");
+    htmlNavigation.hidden = true; htmlNavigation.setAttribute("aria-label", "手册章节导航"); htmlNavigationStatus.setAttribute("role", "status");
+    htmlNavigation.append(node("h3", "", "手册章节导航"), htmlNavigationStatus, buildHtmlTreeButton); buildHtmlTreeButton.addEventListener("click", startHtmlTreeBuild);
+    const indexCoverage = node("p", "lp-help"), indexes = node("div", "lp-indexes"); content.append(selectedHeading, evaluationContent, libraryActions, htmlNavigation, liveProgress, bindings, indexHeading, indexCoverage, indexes);
     const buildDetails = node("details", "lp-build"); buildDetails.append(node("summary", "", "构建 / 更新当前资料库"));
     const buildForm = node("form", "lp-build-form");
     const casesSection = node("section", "lp-case-selection"), caseSummary = node("p", "lp-case-summary"), caseRoots = node("p", "lp-help lp-case-roots"), caseDetails = node("details", "lp-case-files-details"), caseFiles = node("ul", "lp-case-files"), reloadModels = button("重新查找", "lp-button lp-button-quiet lp-find-models");
     casesSection.append(node("h4", "", "构建范围 · 当前资料库全部模型"), caseSummary, caseRoots);
     caseDetails.append(node("summary", "", "查看全部模型文件清单"), caseFiles);
-    casesSection.append(reloadModels, caseDetails); buildForm.append(casesSection, node("p", "lp-help", "构建当前登记目录中的全部资料，需要其他范围请新增资料库。默认构建 QMD 关键词索引；向量默认关闭，需按需勾选。Agent 注释保持关闭。"));
+    casesSection.append(reloadModels, caseDetails); buildForm.append(casesSection, node("p", "lp-help", "构建当前登记目录中的全部资料，需要其他范围请新增资料库。支持的 HTML 手册会自动构造章节树，供规划优先导航。QMD 关键词用于补充检索；向量默认关闭，需按需勾选。Agent 注释保持关闭。"));
     const extractionSection = node("section", "lp-extraction"), extractionMode = select([["offline", "离线解析（默认，无需 COMSOL）"], ["deep", "COMSOL 深度 API 增强"]]), extractionHelp = node("p", "lp-help lp-extraction-help");
     extractionMode.classList.add("lp-extraction-select"); extractionMode.value = "offline"; extractionMode.setAttribute("aria-label", "模型解析方式");
     extractionSection.append(field("模型解析方式", extractionMode), extractionHelp); buildForm.append(extractionSection);
@@ -546,7 +550,41 @@
     }
     function modeState(mode) { return indexEntries(state.indexes).find(([key]) => key === mode)?.[1] || {}; }
     function modeReady(mode) { return (!vectorMode(mode) || embeddingAvailable()) && modeState(mode).ready === true; }
-    function setDisabled() { const library = selectedLibrary(), draft = library && !isManual(library) ? modelSelection(library.id) : null; const incomplete = draft && (draft.status !== "ready" || !draft.files.length || draft.hasMore || draft.missing.length || draft.incomplete); buildButton.disabled = !activeLibrary(library) || Boolean(state.libraryAction) || Boolean(cleanupSession) || state.buildBusy || libraryPending(library) || Boolean(incomplete); searchButton.disabled = !activeLibrary(library) || Boolean(state.libraryAction) || state.searchBusy || !modeReady(searchMode.value); registerButton.disabled = state.createBusy; refreshButton.disabled = state.refreshBusy || state.libraryView === "evaluation" && state.evaluationAccessSaving; createForm.setAttribute("aria-busy", String(state.createBusy)); buildForm.setAttribute("aria-busy", String(state.buildBusy)); registerButton.textContent = state.createBusy ? "正在保存…" : "保存资料库"; buildButton.textContent = state.buildBusy ? "正在提交…" : "开始构建"; buildButton.title = library && !activeLibrary(library) ? "请先恢复并启用资料库。" : incomplete ? "请先确认模型目录可读且已列出完整清单。" : ""; bindings.querySelectorAll(".lp-rebind-open").forEach(control => { control.disabled = !library || deleted(library) || Boolean(state.libraryAction) || Boolean(cleanupSession) || state.buildBusy || libraryPending(library); }); syncExtractionMode(); renderLibraryActions(); syncCleanupControls(); renderEmbeddingControl(); syncEvaluationAccess(); }
+    function setDisabled() {
+      const library = selectedLibrary(), draft = library && !isManual(library) ? modelSelection(library.id) : null;
+      const incomplete = draft && (draft.status !== "ready" || !draft.files.length || draft.hasMore || draft.missing.length || draft.incomplete);
+      buildButton.disabled = !activeLibrary(library) || Boolean(state.libraryAction) || Boolean(cleanupSession) || state.buildBusy || libraryPending(library) || Boolean(incomplete);
+      searchButton.disabled = !activeLibrary(library) || Boolean(state.libraryAction) || state.searchBusy || !modeReady(searchMode.value);
+      registerButton.disabled = state.createBusy; refreshButton.disabled = state.refreshBusy || state.libraryView === "evaluation" && state.evaluationAccessSaving;
+      createForm.setAttribute("aria-busy", String(state.createBusy)); buildForm.setAttribute("aria-busy", String(state.buildBusy));
+      registerButton.textContent = state.createBusy ? "正在保存…" : "保存资料库"; buildButton.textContent = state.buildBusy ? "正在提交…" : "开始构建";
+      buildButton.title = library && !activeLibrary(library) ? "请先恢复并启用资料库。" : incomplete ? "请先确认模型目录可读且已列出完整清单。" : "";
+      bindings.querySelectorAll(".lp-rebind-open").forEach(control => { control.disabled = !library || deleted(library) || Boolean(state.libraryAction) || Boolean(cleanupSession) || state.buildBusy || libraryPending(library); });
+      renderHtmlNavigation(library); syncExtractionMode(); renderLibraryActions(); syncCleanupControls(); renderEmbeddingControl(); syncEvaluationAccess();
+    }
+    function renderHtmlNavigation(library) {
+      htmlNavigation.hidden = !library || !isManual(library) || state.libraryView !== "current";
+      if (htmlNavigation.hidden) return;
+      const summary = state.htmlTrees[library.id];
+      const message = state.htmlTreeError ? `目录状态读取失败：${state.htmlTreeError}` : summary?.tree_count
+        ? `${summary.tree_count} 棵目录树 · ${summary.node_count} 个章节节点 · ${summary.document_count} 份关联 HTML。${library.enabled === false ? "资料库已关闭，Agent 不可新读。" : "规划优先导航并读取原文，QMD 补充检索。"}`
+        : "尚无已发布章节树。支持的 HTML 手册建库时自动生成；已有库可仅补建目录，没有原生目录的资料继续使用 QMD。";
+      textIfChanged(htmlNavigationStatus, message);
+      buildHtmlTreeButton.disabled = !activeLibrary(library) || Boolean(state.libraryAction) || Boolean(cleanupSession) || state.buildBusy || libraryPending(library);
+      buildHtmlTreeButton.title = !activeLibrary(library) ? "请先恢复并启用手册库。" : "仅构造目录与原文指纹，复用已有资料和 QMD 索引";
+    }
+    async function startHtmlTreeBuild() {
+      if (buildHtmlTreeButton.disabled || state.buildBusy) return;
+      const library = selectedLibrary(); if (!library || !isManual(library)) return;
+      state.buildBusy = true; setDisabled();
+      try {
+        const job = await request(`/api/libraries/${encodeURIComponent(library.id)}/build-tree`, {});
+        if (state.destroyed) return;
+        observeJob(job); renderJobs(); schedulePolls(); liveProgress.scrollIntoView?.({behavior: "smooth", block: "nearest"});
+        say("章节树任务已提交，只生成目录和原文指纹，复用已有资料与 QMD；可在构建进度中中断。");
+      } catch (error) { if (!state.destroyed && error.name !== "AbortError") say(error.message, true); }
+      finally { if (!state.destroyed) { state.buildBusy = false; setDisabled(); } }
+    }
     function syncSearchMode() {
       const library = selectedLibrary();
       if (library && !activeLibrary(library)) { state.lifecycleSearchNotice = deleted(library) ? "资料库已删除，不参与检索；历史资料保留。恢复后请手动启用。" : "资料库已关闭，不参与检索；历史资料保留。请先启用资料库。"; searchStatus.textContent = state.lifecycleSearchNotice; searchStatus.classList.add("lp-search-error"); setDisabled(); return; }
@@ -778,10 +816,10 @@
       const unit = units[stage.unit] || "项";
       const amount = stage.determinate ? `本阶段 ${stage.completed} / ${stage.total} ${unit}` : !pending(job) ? "任务已结束 · 阶段计数以服务记录为准" : stage.total !== null ? stage.completed === null ? `本阶段完成数待报告 · 总计 ${stage.total} ${unit}` : `本阶段报告 ${stage.completed} / ${stage.total} ${unit} · 计数需核对` : stage.completed !== null ? `本阶段已处理 ${stage.completed} ${unit} · 总量未报告` : "本阶段总量未报告 · 正在等待实际进度";
       textIfChanged(progressAmount, amount); progressBar.setAttribute("aria-valuetext", `${label}，${amount}`);
-      if (stage.detail) { textIfChanged(progressDetail, stage.detail); progressDetail.hidden = false; }
+      if (stage.detail) { textIfChanged(progressDetail, stage.detail.replace("Building native HTML chapter metadata", "构造章节目录与原文指纹")); progressDetail.hidden = false; }
       textIfChanged(progressFilePath, stage.currentFile || (pending(job) ? "服务尚未报告当前文件" : "此任务已结束"));
-      textIfChanged(progressFiles, `文件已尝试 ${countText(job.completed)} / ${count(job.total) === null ? "总量待扫描" : job.total}`);
-      textIfChanged(progressCounts, `成功 ${countText(counts.succeeded)} · 部分 ${countText(counts.partial)} · 失败 ${countText(counts.failed)}`); progressFiles.hidden = job.kind === "reindex"; progressCounts.hidden = job.kind === "reindex"; renderElapsed();
+      textIfChanged(progressFiles, `${job.kind === "html_tree" ? "HTML 已核对" : "文件已尝试"} ${countText(job.completed)} / ${count(job.total) === null ? "总量待扫描" : job.total}`);
+      textIfChanged(progressCounts, `成功 ${countText(counts.succeeded)} · 部分 ${countText(counts.partial)} · 失败 ${countText(counts.failed)}`); progressFiles.hidden = job.kind === "reindex"; progressCounts.hidden = ["reindex", "html_tree"].includes(job.kind); renderElapsed();
       const warnings = [];
       if (state.cancelErrors.has(job.id)) warnings.push(`中断请求未确认：${state.cancelErrors.get(job.id)}。可重试；任务是否结束以服务状态为准。`);
       if (state.pollErrors.has(job.id)) warnings.push(`状态连接暂时中断，保留上次进度并重试读取：${state.pollErrors.get(job.id)}。不会自动重跑构建。`);
@@ -829,7 +867,7 @@
       textIfChanged(view.stage, stageLabels[job.stage] || job.stage || "构建任务"); textIfChanged(view.status, statusLabels[job.status] || job.status || "状态未报告");
       const badge = `lp-badge${job.status === "completed" ? " lp-good" : ["failed", "partial", "interrupted"].includes(job.status) ? " lp-warn" : ""}`; if (view.status.className !== badge) view.status.className = badge;
       const total = Number.isFinite(job.total) ? job.total : null, completed = Number.isFinite(job.completed) ? job.completed : null;
-      textIfChanged(view.amount, `已处理 ${completed ?? "未报告"} / ${total ?? "扫描中"} 个文件 · ${date(job.started_at)}`);
+      textIfChanged(view.amount, `已处理 ${completed ?? "未报告"} / ${total ?? "扫描中"} ${job.kind === "html_tree" ? "份 HTML" : "个文件"} · ${date(job.started_at)}`);
       textIfChanged(view.error, job.error || ""); if (view.error.hidden !== !job.error) view.error.hidden = !job.error;
       const failed = list(job.failed), failedKey = JSON.stringify(failed); if (view.failures.hidden !== !failed.length) view.failures.hidden = !failed.length;
       if (failedKey !== view.failedKey) {
@@ -883,6 +921,7 @@
           renderLibraries(); if (!quiet) say("已读取测试集摘要与检索状态。"); return true;
         }
         state.libraries = list(Array.isArray(data) ? data : data.libraries);
+        state.htmlTrees = data.html_trees || {}; state.htmlTreeError = data.html_tree_error || "";
         const existing = state.jobs, received = list(data.jobs); received.forEach(observeJob);
         state.jobs = [...received.map((job) => state.jobs.find((current) => current.id === job.id)), ...existing.filter((job) => pending(job) && !received.some((incoming) => incoming.id === job.id))]; state.indexes = data.indexes || {};
         const libraries = visibleLibraries();

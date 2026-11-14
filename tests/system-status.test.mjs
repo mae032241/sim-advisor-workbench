@@ -174,7 +174,7 @@ test('rendered per-mode errors and external names are text, never markup', () =>
     session: current, agent: {...external, external: {...external.external, name: '<img src=x onerror=fail()>'}},
   });
   const list = f.get('service-list');
-  assert.equal(list.children.length, 5);
+  assert.equal(list.children.length, 6);
   assert.match(list.textContent, /sim-cli/);
   assert.match(list.textContent, /<script>fail\(\)<\/script>/);
   assert.match(list.textContent, /<img src=x onerror=fail\(\)>/);
@@ -205,4 +205,15 @@ test('keyword maintenance uses the registered QMD engine under a closed disclosu
   assert.match(html, /<details class="corpus-block system-legacy"><summary>资料库关键词索引维护<\/summary>/);
   for (const id of ['corpus-status', 'build-index', 'index-progress', 'service-list']) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(source, /onState: updateAgentState/);
+});
+
+test('native HTML chapter navigation is shown independently of optional PageIndex and QMD', () => {
+  const f = fixture();
+  const htmlTree = card(f.cards({services: {html_tree: {available: true, status_label: '主导航就绪', detail: '先读原文', mode: 'native-html-chapters'}, pageindex: {installed: false}, qmd: {installed: false}}}), 'html_tree');
+  assert.equal(htmlTree.label, '主导航就绪');
+  assert.equal(htmlTree.tone, 'good');
+  assert.equal(htmlTree.detail, '先读原文');
+  const closed = card(f.cards({services: {html_tree: {available: false, status_label: '已有目录 · 资料库未启用'}}}), 'html_tree');
+  assert.equal(closed.tone, 'neutral');
+  assert.match(closed.label, /未启用/);
 });

@@ -58,6 +58,16 @@ def hashes(root):
     return {path.relative_to(root).as_posix(): batch.sha(path) for path in paths}
 
 
+def visible_response_sha256(value):
+    """CodexRuntime unwraps RPC contentItems before the model receives them."""
+    if isinstance(value, dict) and 'success' in value and 'contentItems' in value:
+        items = value['contentItems']
+        if len(items) != 1 or items[0].get('type') != 'inputText':
+            raise ValueError('A single JSON tool payload is required for delivery verification')
+        value = json.loads(items[0]['text'])
+    return response_sha256(value)
+
+
 def install_tools(app, cards, extra_tools, conditions, scope, audit_paths):
     from advisor.agent_sessions import planning_tools
     from advisor.bounded_knowledge import BoundedKnowledge
@@ -131,14 +141,14 @@ def install_tools(app, cards, extra_tools, conditions, scope, audit_paths):
                                        if isinstance(item, dict)])
             encoded = json.dumps(result, ensure_ascii=False, allow_nan=False).encode('utf-8')
             row.update(result_json_bytes=len(encoded), result_sha256=hashlib.sha256(encoded).hexdigest())
-            row['response_sha256'] = response_sha256(result)
+            row['response_sha256'] = visible_response_sha256(result)
             if len(encoded) > 7000:
                 raise ValueError('Bounded tool output exceeded its delivery budget')
             return result
         except (ValueError, PermissionError, FileNotFoundError) as error:
             row.update(success=False, error_type=type(error).__name__, error=str(error)[:700])
             result = base._feedback('route_tool_rejected', str(error)[:700])
-            row['response_sha256'] = response_sha256(result)
+            row['response_sha256'] = visible_response_sha256(result)
             return result
         finally:
             row['seconds'] = round(time.monotonic() - start, 4)
@@ -156,11 +166,16 @@ def parser():
     result = base.parser()
     result.description = __doc__
     result.set_defaults(run_id=RUN_ID)
+    result.add_argument('--condition', action='append', choices=CONDITIONS,
+                        help='Run only the selected condition; repeat for both arms.')
     return result
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    selected_conditions = args.condition or list(CONDITIONS)
+    if len(set(selected_conditions)) != len(selected_conditions):
+        raise ValueError('Each condition may be selected only once')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,119}', args.run_id) or args.timeout <= 0:
         raise ValueError('A simple new run ID and positive timeout are required')
     candidates, candidate_hash = base.load_candidates(args.candidate_list)
@@ -210,7 +225,8 @@ def main(argv=None):
     app = server = None
     stop, lock = threading.Event(), threading.RLock()
     state = {'schema': 'route-catalog-progress/v1', 'status': 'preparing', 'model': args.model,
-             'effort': EFFORT, 'expected_runs': 6, 'parallel_limit': args.parallel, 'active': [], 'completed': []}
+             'effort': EFFORT, 'expected_runs': len(CASES) * len(selected_conditions),
+             'parallel_limit': args.parallel, 'active': [], 'completed': []}
     def progress():
         state['updated_at'] = base.now()
         batch.write(here / 'progress.json', state)
@@ -250,7 +266,7 @@ def main(argv=None):
         (here / 'product-instructions.txt').write_text(INSTRUCTIONS + PAGING_INSTRUCTIONS, encoding='utf-8')
         tasks, contexts, manifests = [], {}, {}
         for cid in CASES:
-            for condition in CONDITIONS:
+            for condition in selected_conditions:
                 key = condition + '-' + cid
                 prepared = create_task(url, root, cid)
                 sid = prepared['session']['id']
@@ -265,10 +281,21 @@ def main(argv=None):
                     poll_interval=args.poll_interval, audit_path=audits[sid]))
         for cid in CASES:
             a, b = ('existing_navigation-' + cid), ('case_methods-' + cid)
-            if contexts[a]['goal'] != contexts[b]['goal'] or batch.normalize_context(contexts[a]['model']) != batch.normalize_context(contexts[b]['model']) or manifests[a] != manifests[b]:
+            if a in contexts and b in contexts and (contexts[a]['goal'] != contexts[b]['goal'] or batch.normalize_context(contexts[a]['model']) != batch.normalize_context(contexts[b]['model']) or manifests[a] != manifests[b]):
                 raise ValueError('Paired public task inputs differ')
         frozen_sources = {name: batch.sha(APP / name) for name in CORE_PATHS}
-        protocol = {'schema': 'route-catalog-protocol/v1', 'cases': CASES, 'conditions': CONDITIONS,
+        verification_path = args.method_root / 'verification.json'
+        construction_verification = None
+        if verification_path.is_file():
+            verified = json.loads(verification_path.read_text(encoding='utf-8'))
+            if not verified.get('valid') or verified.get('card_contents_changed') is not False:
+                raise ValueError('Construction reverification did not preserve the original card contents')
+            construction_verification = {'path': str(verification_path), 'sha256': batch.sha(verification_path),
+                'constructor_rerun': verified['constructor_rerun'],
+                'card_contents_changed': verified['card_contents_changed'],
+                'recovered_execution_errors': sum(len(row['delivery_audit'].get('execution_errors', []))
+                                                   for row in verified['cases'])}
+        protocol = {'schema': 'route-catalog-protocol/v1', 'cases': CASES, 'conditions': selected_conditions,
             'model': args.model, 'effort': EFFORT, 'parallel_limit': args.parallel,
             'runtime_profile': NATIVE_PROFILE, 'tool_transport': 'bounded_code_mode_single_call',
             'condition_difference': 'case_methods exposes the generated route catalog/cards; existing_navigation reports not_prepared. Both retain the same raw knowledge tools and bounded paging.',
@@ -276,13 +303,17 @@ def main(argv=None):
             'shared_route_message': MESSAGE, 'message_sha256': base.digest(MESSAGE),
             'output_budget_bytes': 7000, 'actual_tool_output_audit_budget_bytes': 8192,
             'generated_card_sha256': card_hashes, 'source_cases': candidates, 'candidate_sha256': candidate_hash,
+            'construction_delivery_verification': construction_verification,
             'source_sha256': frozen_sources, 'public_input_manifest': manifests,
             'enabled_libraries': scope, 'search_backend': policy_description('qmd_keyword'),
             'private_grading_read': False, 'test_answers_supplied': False, 'embedding_enabled': False,
             'index_rebuild_performed': False, 'solver_run': False, 'attempts_per_condition_case': 1,
             'automatic_retries': 0, 'execution_order': [task.condition + '-' + task.case for task in tasks],
+            'delivery_failure_scope': 'Only the affected run is invalid; other turns finish naturally.',
             'limitations': ['Three tasks, one attempt each; not a significance test.',
-                            'Bounded single-call paging guidance differs from historical trials; compare only the new paired arms.']}
+                            ('Historical baseline comparison only; prompts/tool delivery may differ, and no baseline inference is rerun.'
+                             if len(selected_conditions) == 1 else
+                             'Bounded single-call paging guidance differs from historical trials; compare only the new paired arms.')]}
         batch.write(here / 'protocol.json', protocol)
         if args.prepare_only:
             state.update(status='preflight_complete')
@@ -314,7 +345,6 @@ def main(argv=None):
                 result['delivery_valid'] = delivery['valid']
                 if not delivery['valid']:
                     result.update(status='invalid_delivery', failure_code='actual_tool_output_not_verified')
-                    stop.set()
                 batch.write(task.destination / 'run.json', result)
                 row = {key: result.get(key) for key in ('case_id', 'condition', 'status', 'seconds',
                     'conversation_id', 'natural_termination', 'failure_code', 'delivery_valid')}

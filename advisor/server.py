@@ -28,6 +28,21 @@ from .knowledge_views import candidate_view, related_sources_view, source_contex
 from .ui_status import status_summary
 
 
+def html_tree_library_summaries(store):
+    """Only per-library counts for the management page, never node payloads."""
+    if getattr(store, "root", None) is None:
+        return {}
+    from .html_tree_store import HtmlTreeRepository
+    result = {}
+    for tree in HtmlTreeRepository(store).list_trees():
+        library_id = tree["library_id"]
+        summary = result.setdefault(library_id, {"tree_count": 0, "node_count": 0, "document_count": 0})
+        summary["tree_count"] += 1
+        summary["node_count"] += int(tree.get("node_count", 0))
+        summary["document_count"] += int(tree.get("document_count", 0))
+    return result
+
+
 class DisabledBatchPlanner:
     def status(self):
         return {"available": False, "mode": "disabled", "detail": "未启用内部批处理调试规划器。"}
@@ -242,8 +257,13 @@ def handler_for(app: App):
                 return self.respond({"results": [candidate_view(item) for item in app.kb.search(text, limit=max(1, min(int(query.get("limit", ["8"])[0]), 30)), kind=query.get("kind", ["all"])[0], filters=filters)]})
             if method == "GET" and path == "/api/libraries":
                 libraries = app.libraries.libraries(include_deleted=True) if query.get("include_deleted", [""])[0] == "1" else app.libraries.libraries()
+                try:
+                    html_trees, html_tree_error = html_tree_library_summaries(app.libraries), None
+                except (OSError, ValueError) as exc:
+                    html_trees, html_tree_error = {}, str(exc)[:500]
                 return self.respond(status_view({"libraries": libraries, "jobs": status_read(app.libraries, "jobs"),
-                                     "indexes": status_read(app.kb, "status").get("library_indexes", {})}))
+                                     "indexes": status_read(app.kb, "status").get("library_indexes", {}),
+                                     "html_trees": html_trees, "html_tree_error": html_tree_error}))
             if path == "/api/libraries/evaluation-sets" or path.startswith("/api/libraries/evaluation-sets/"):
                 # One explicit same-origin web action. Never route this through
                 # ordinary library controls or publish it as an Agent tool.
@@ -298,10 +318,12 @@ def handler_for(app: App):
                 if action == "purge":
                     return self.respond(app.libraries.purge_library(library_id, confirmed=body.get("confirmed", False)))
                 return self.respond(app.libraries.restore_library(library_id))
-            match = re.fullmatch(r"/api/libraries/([A-Za-z0-9_-]+)/(build|scan|rebind)", path)
+            match = re.fullmatch(r"/api/libraries/([A-Za-z0-9_-]+)/(build|build-tree|scan|rebind)", path)
             if method == "POST" and match:
                 library_id, action = match.groups()
                 body = self.json_body()
+                if action == "build-tree":
+                    return self.respond(app.libraries.start_build_tree(library_id), 202)
                 if action == "scan":
                     return self.respond({"files": app.libraries.scan(library_id, body.get("model_paths"), body.get("limit"))})
                 if action == "rebind":
@@ -324,7 +346,7 @@ def handler_for(app: App):
                 return self.respond(app.libraries.read_evidence(match[1], index=query.get("index", ["0"])[0],
                     line=query.get("line", [None])[0], limit=query.get("limit", ["120"])[0]))
             if method == "GET" and path.startswith("/api/sources/"):
-                source = app.kb.get_document(path.removeprefix("/api/sources/"))
+                source = app.kb.get_document(unquote(path.removeprefix("/api/sources/")))
                 if not source:
                     raise FileNotFoundError("资料不存在。")
                 source = dict(source)

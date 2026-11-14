@@ -40,7 +40,7 @@ def main():
             cmd.add_argument("--confirm", action="store_true", help="Irreversibly remove this deleted library's derived data; keep original sources")
         if action == "models":
             cmd.add_argument("--limit", type=int, default=None, help="Optional explicit sample limit; default lists all registered models without hashing")
-    for action in ["scan", "build", "status", "rebind"]:
+    for action in ["scan", "build", "build-tree", "status", "rebind"]:
         cmd = commands.add_parser(action)
         cmd.add_argument("library_id")
         if action in {"scan", "build"}:
@@ -111,6 +111,8 @@ def main():
             result = store.build(args.library_id, paths=args.paths, limit=args.limit,
                                  deep=not args.shallow, enrich=args.enrich, modes=normalize_modes(args.modes.split(",")),
                                  model_format=args.model_format)
+        elif args.command == "build-tree":
+            result = store.build_tree(args.library_id)
         elif args.command == "index":
             result = store.reindex(normalize_modes(args.modes.split(",")))
         elif args.command == "cancel":

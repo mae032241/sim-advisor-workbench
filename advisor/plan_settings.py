@@ -16,7 +16,7 @@ MAX_SOURCE_REFS = 8
 MAX_SETTING_BYTES = 12 * 1024
 MAX_TABLE_BYTES = 2 * 1024 * 1024
 SETTING_STATUSES = ("adopted", "adapted", "alternative", "unresolved", "not_applicable")
-SOURCE_CONTEXTS = ("source_text", "case_configuration", "navigation")
+SOURCE_CONTEXTS = ("source_text", "case_configuration", "html_section", "original_mph_xml", "navigation")
 ACTIVE_SETTING_STATUSES = {"adopted", "adapted", "alternative"}
 IMPLEMENTATION_FIELDS = ("action", "inputs", "checks")
 

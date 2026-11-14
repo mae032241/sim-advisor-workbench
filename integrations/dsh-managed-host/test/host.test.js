@@ -89,8 +89,8 @@ test('native create validates route, adds scoped tools/prompt, preserves native 
   assert.ok(!JSON.stringify(f.ready).includes(TOKEN));
 });
 
-test('managed host registers contract and future tools directly from server definitions', async t => {
-  const toolDefinitions = ['get_tool_contract', 'future_planning_tool'].map(name => ({
+test('managed host registers navigation, contract and future tools directly from server definitions', async t => {
+  const toolDefinitions = ['get_tool_contract', 'get_html_navigation', 'read_html_section', 'get_case_navigation', 'future_planning_tool'].map(name => ({
     name, description: 'server-owned contract guidance', inputSchema: {type: 'object', properties: {
       tool: {type: 'string'}, path: {type: 'string'}, offset: {type: 'integer'}, length: {type: 'integer'},
     }, required: ['tool'], additionalProperties: false},

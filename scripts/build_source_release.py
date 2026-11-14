@@ -27,6 +27,7 @@ EXCLUDED_FILES = {
     'scripts/evaluate_retrieval.py', 'tests/test_library_pilot.py', 'tests/test_library_report.py',
     'scripts/replay_case09_retrieval.py', 'scripts/benchmark_product_replay.py',
     'scripts/benchmark_product_report.py',
+    'scripts/summarize_raw_address.py',
 }
 FORBIDDEN_PARTS = {'.git', '.tools', '.venv', 'venv', '.model-env', '.retrieval-env',
                    'data', 'dist', '__pycache__', '.pytest_cache', 'cache', 'models', 'sessions'}

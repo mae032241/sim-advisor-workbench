@@ -920,8 +920,12 @@ class LibraryStore:
                 from .library_index_purge import purge_library_indexes
                 progress(stage="indexes", phase=None, completed=None, total=None, unit="generations")
                 indexes = purge_library_indexes(self.root / "search", library_id, generation=generation, on_progress=progress)
+                from .html_tree_store import HtmlTreeRepository
+                progress(stage="html_tree", phase="purging", completed=None, total=None, unit="trees")
+                html_trees = HtmlTreeRepository(self).purge_library(library_id)
                 counts = {"cache_directories": 0, "files": 0, "file_bytes": 0, "blobs": 0,
                           "shared_blobs_retained": plan["shared_blobs"], "shared_build_records_updated": 0}
+                counts["html_trees"] = html_trees["tree_count"]
                 progress(stage="files", completed=0, total=None, unit="files")
                 inventory = plan["inventory"]
                 progress(total=sum(item[0] for item in inventory.values()))
@@ -2193,6 +2197,20 @@ class LibraryStore:
                     checkpoint()
 
                 refresh_registry(self.root, on_progress=holdout_progress)
+            if library["type"] in MANUAL_TYPES:
+                from .html_tree_store import HtmlTreeRepository
+
+                def tree_progress(update):
+                    check_cancelled()
+                    job["stage"] = "html_tree"
+                    job["progress"] = update["progress"]
+                    checkpoint()
+
+                job["stage"] = "html_tree"
+                job["progress"] = {"completed": 0, "total": None, "unit": "documents", "current_file": None,
+                                   "detail": "Building native HTML chapter navigation"}
+                self._save_job(job)
+                job["html_tree"] = HtmlTreeRepository(self).build_library(library_id, on_progress=tree_progress)
             job["stage"] = "indexing"
             job["progress"] = {"completed": None, "total": None, "unit": "indexes", "current_file": None,
                                "detail": "Preparing retrieval indexes"}
@@ -2239,6 +2257,79 @@ class LibraryStore:
                 lease.unlink(missing_ok=True)
             self._build_lock.release()
         return self._job_view(job)
+
+    def build_tree(self, library_id, *, job_id=None):
+        """Tree-only migration/build; no extraction, QMD or embedding work."""
+        self._buildable_library(library_id)
+        job_id = job_id or uuid.uuid4().hex
+        if not self._build_lock.acquire(blocking=False):
+            raise LibraryLifecycleConflict("A library build or cleanup is already active")
+        job = {"id": job_id, "library_id": library_id, "kind": "html_tree", "stage": "html_tree",
+               "pid": os.getpid(), "cancel_supported": True, "status": "running", "started_at": now(),
+               "completed": 0, "total": 0, "failed": [], "items": [],
+               "progress": {"completed": 0, "total": None, "unit": "documents", "current_file": None,
+                            "detail": "Building native HTML chapter navigation only"}}
+        lease, token, owned = self.root / ".build.lock", uuid.uuid4().hex, False
+        self._save_job(job)
+        try:
+            with build_control(BuildControl(self._cancel_path(job_id))):
+                check_cancelled()
+                if lease.is_file():
+                    previous = json.loads(lease.read_text(encoding="utf-8"))
+                    if self._owner_moved(previous) or not process_alive(previous.get("pid")):
+                        lease.unlink()
+                try:
+                    with lease.open("x", encoding="utf-8") as handle:
+                        handle.write(encoded({"pid": os.getpid(), "job_id": job_id,
+                                              "workspace_root": str(self.paths.root), "token": token}))
+                    owned = True
+                except FileExistsError:
+                    raise LibraryLifecycleConflict("Another process is constructing this catalog") from None
+                from .html_tree_store import HtmlTreeRepository
+                last = 0.0
+
+                def progress(update):
+                    nonlocal last
+                    check_cancelled()
+                    job["progress"] = update["progress"]
+                    job["completed"] = update["progress"].get("completed") or 0
+                    job["total"] = update["progress"].get("total") or 0
+                    stamp = time.monotonic()
+                    if stamp - last >= 0.25 or update["progress"].get("phase") == "finished":
+                        self._save_job(job)
+                        last = stamp
+
+                job["html_tree"] = HtmlTreeRepository(self).build_library(library_id, on_progress=progress)
+                job["status"] = "completed"
+        except BuildCancelled:
+            job.update(status="cancelled", cancelled_stage="html_tree")
+        except Exception as exc:
+            job.update(status="failed", failed_stage="html_tree", error=f"{type(exc).__name__}: {str(exc)[:1000]}")
+        finally:
+            job.update(stage="finished", finished_at=now())
+            job["progress"] = dict(job["progress"], current_file=None)
+            self._save_job(job)
+            if owned and lease.exists() and json.loads(lease.read_text(encoding="utf-8")).get("token") == token:
+                lease.unlink()
+            self._build_lock.release()
+        return self._job_view(job)
+
+    def start_build_tree(self, library_id):
+        self._buildable_library(library_id)
+        job_id = uuid.uuid4().hex
+        self._save_job({"id": job_id, "library_id": library_id, "kind": "html_tree", "status": "queued",
+                        "stage": "queued", "pid": os.getpid(), "cancel_supported": True, "started_at": now(),
+                        "completed": 0, "total": 0, "failed": [], "items": []})
+
+        def run():
+            try:
+                self.build_tree(library_id, job_id=job_id)
+            except Exception as exc:
+                self._save_job({"id": job_id, "library_id": library_id, "kind": "html_tree", "status": "failed",
+                                "stage": "finished", "finished_at": now(), "error": f"{type(exc).__name__}: {str(exc)[:700]}"})
+
+        threading.Thread(target=run, daemon=True).start()
+        return self.job(job_id)
 
     def _refresh_case_navigation(self, indexes):
         """Refresh derived overview scopes after publication under our build lease."""
