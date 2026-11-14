@@ -31,16 +31,16 @@ const find = (root, match) => match(root) ? root : root.children.map(child => fi
 const requestURL = path => new URL(path, 'http://localhost:49268');
 const endpoint = path => requestURL(path).pathname;
 
-function fixture(response) {
+function fixture(response, extraWindow = {}) {
   let serial = 0, now = 0; const timers = new Map(), calls = [], listeners = new Map(), document = {activeElement: null, visibilityState: 'visible', createElement: tag => new Node(tag), addEventListener(type, listener) { listeners.set(type, listener); }, removeEventListener(type) { listeners.delete(type); }, dispatch(type) { listeners.get(type)?.(); }}, host = new Node('section'); host.id = 'agent-panel';
   const current = {session: {id: 'A', revision: 1}};
-  const window = {location: {href: 'http://localhost:49268/?session=A'}, addEventListener() {}};
+  const window = {location: {href: 'http://localhost:49268/?session=A'}, addEventListener() {}, ...extraWindow};
   vm.runInNewContext(script, {window, document, URL, URLSearchParams, AbortController,
     setTimeout(callback, delay) { const id = ++serial; timers.set(id, {callback, delay, at: now + delay}); return id; }, clearTimeout(id) { timers.delete(id); },
     fetch: async (path, settings) => { calls.push({path, settings}); return {ok: true, status: 200, json: async () => await response(path, settings)}; }});
   const panel = window.SimAdvisorAgentPanel.mount(host, {getSession: () => current.session, isDirty: () => false, isBlocked: () => false});
   const get = className => { const node = find(host, item => item.className.split(/\s+/).includes(className)); assert.ok(node, className); return node; };
-  return {calls, timers, document, panel, host, get, current, async tick(amount = 2000) { const end = now + amount; for (;;) { const due = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; const [id, entry] = due; timers.delete(id); now = entry.at; entry.callback(); await flush(); } now = end; await flush(); }};
+  return {calls, timers, document, window, panel, host, get, current, async tick(amount = 2000) { const end = now + amount; for (;;) { const due = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; const [id, entry] = due; timers.delete(id); now = entry.at; entry.callback(); await flush(); } now = end; await flush(); }};
 }
 const unbound = {session_id: 'A', connection_mode: 'external', status: 'disconnected', connected: false, alive: false, plan_revision: 1,
   managed_backend: 'codex', managed_model: 'gpt-6.1-sol', managed_reasoning_effort: 'xhigh', messages: [], external: {registered: false, alive: false, offline_reason: 'unregistered'}};
@@ -292,5 +292,35 @@ test('a command cancels the held long poll and resumes it afterwards', async () 
   assert.equal(held.aborted, true, 'the held poll does not keep its connection during a command');
   const post = f.calls.find(call => call.settings?.method === 'POST');
   assert.ok(post, 'the message was sent'); assert.ok(f.calls.slice(f.calls.indexOf(post) + 1).some(call => !call.settings?.method), 'polling resumes after the command');
+  f.panel.destroy();
+});
+
+test('copying the DSH link confirms on the button without an in-progress flash, then restores it', async () => {
+  const copied = [];
+  const f = fixture(() => unbound, {navigator: {clipboard: {writeText: async text => { copied.push(text); }}}}); await flush();
+  const copy = find(f.host, node => node.tagName === 'BUTTON' && node.textContent.includes('DSH 绑定链接'));
+  Node.writes.length = 0;
+  await copy.emit('click'); await flush();
+  assert.deepEqual(copied, ['http://localhost:49268/?session=A']);
+  assert.equal(copy.textContent, '✓ 已复制链接');
+  assert.ok(!Node.writes.some(write => write.node === copy && write.property === 'textContent' && /正在复制/.test(write.value)), 'no transient label');
+  assert.ok(!Node.writes.some(write => write.node === copy && write.property === 'disabled' && write.value === true), 'the button is not greyed out while copying');
+  const status = f.get('agent-dsh-copy-status');
+  assert.equal(status.hidden, false); assert.ok(status.className.includes('visually-hidden'), 'success is announced, not shown as extra text');
+  assert.equal(f.get('agent-dsh-link-details').open, false, 'nothing expands on success');
+  await f.tick(2500);
+  assert.equal(copy.textContent, '复制 DSH 绑定链接');
+  f.panel.destroy();
+});
+
+test('when no clipboard is available the manual link opens with a visible note next to the button', async () => {
+  const f = fixture(() => unbound); await flush();
+  const copy = find(f.host, node => node.tagName === 'BUTTON' && node.textContent.includes('DSH 绑定链接'));
+  await copy.emit('click'); await flush();
+  const status = f.get('agent-dsh-copy-status');
+  assert.equal(status.hidden, false); assert.ok(!status.className.includes('visually-hidden'));
+  assert.match(status.textContent, /未能自动复制/);
+  assert.equal(f.get('agent-dsh-link-details').open, true);
+  assert.equal(copy.textContent, '复制 DSH 绑定链接');
   f.panel.destroy();
 });

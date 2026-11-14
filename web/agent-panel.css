@@ -14,6 +14,8 @@
 .agent-dsh-actions > .button { max-width: 100%; min-width: 0; white-space: normal; text-align: center; }
 .agent-dsh-hint, .agent-dsh-copy-status { margin: .35rem 0 0; color: #5b746a; font-size: .73rem; line-height: 1.5; overflow-wrap: anywhere; }
 .agent-dsh-copy-status { color: #27675a; }
+.agent-dsh-actions > .agent-dsh-copy-status { flex: 1 0 100%; margin: 0; color: #8a4b12; }
+.agent-dsh-actions > .button.is-copied { color: #1f5f50; border-color: #2f7a68; background: #e3f1ec; }
 .agent-dsh-link-details { min-width: 0; }
 .agent-dsh-link-details > summary { cursor: pointer; font-size: .73rem; color: #3f685c; }
 .agent-dsh-link-details[open] { flex: 1 0 100%; }

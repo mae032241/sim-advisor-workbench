@@ -14,7 +14,7 @@ window.SimAdvisorAgentPanel = (() => {
     };
     const button = (text, className = "button button-subtle") => { const node = make("button", className, text); node.type = "button"; return node; };
     const labels = { disconnected: "未连接", starting: "正在连接", idle: "已连接 · 空闲", running: "运行中", error: "连接异常" };
-    let sessionId = null, epoch = 0, pollSerial = 0, timer = null, snapshot = null, commandPending = false, refreshingPlan = false, pendingRevision = null, autoLoading = false, localError = "", commandError = "", destroyed = false, notifiedState = "", savedSettings = null, copyingLink = false, backendData = null, backendChoicesKey = "", effortChoicesKey = "", fieldBackend = "codex", messageCursor = "new", stateToken = null, pollController = null;
+    let sessionId = null, epoch = 0, pollSerial = 0, timer = null, snapshot = null, commandPending = false, refreshingPlan = false, pendingRevision = null, autoLoading = false, localError = "", commandError = "", destroyed = false, notifiedState = "", savedSettings = null, copyingLink = false, copiedUntil = 0, copiedTimer = null, backendData = null, backendChoicesKey = "", effortChoicesKey = "", fieldBackend = "codex", messageCursor = "new", stateToken = null, pollController = null;
     const controllers = new Set(), drafts = new Map(), settingsDrafts = new Map(), backendDrafts = new Map();
     const messages = new Map(), messageRows = new Map(), messageSequences = new Map();
     const defaultBackends = [
@@ -28,9 +28,9 @@ window.SimAdvisorAgentPanel = (() => {
     const modelSummary = make("p", "agent-model-summary"), connectionNote = make("p", "agent-connection-note"); connectionNote.setAttribute("role", "status");
     const dshBinding = make("div", "agent-dsh-binding"), dshActions = make("div", "agent-dsh-actions"), copyDshLink = button("复制 DSH 绑定链接"), dshLinkDetails = make("details", "agent-dsh-link-details"), dshLinkSummary = make("summary", "", "手动复制链接"), dshLinkLabel = make("label", "", "当前方案链接"), dshLinkInput = make("input", "agent-dsh-link"), dshCopyStatus = make("p", "agent-dsh-copy-status");
     dshLinkInput.id = `${host.id || "sim-advisor-agent"}-dsh-link`; dshLinkLabel.htmlFor = dshLinkInput.id; dshLinkInput.type = "url"; dshLinkInput.readOnly = true; dshLinkInput.spellcheck = false;
-    dshLinkDetails.append(dshLinkSummary, dshLinkLabel, dshLinkInput); dshActions.append(copyDshLink, dshLinkDetails);
+    dshLinkDetails.append(dshLinkSummary, dshLinkLabel, dshLinkInput); dshActions.append(copyDshLink, dshLinkDetails, dshCopyStatus);
     dshCopyStatus.setAttribute("role", "status"); dshCopyStatus.hidden = true;
-    dshBinding.append(dshActions, make("p", "agent-dsh-hint", "绑定既有 DSH 会话（外部模式）：安装 bridge 插件后发送“连接这个方案：<url>”，将 <url> 换成复制的链接。"), dshCopyStatus);
+    dshBinding.append(dshActions, make("p", "agent-dsh-hint", "绑定既有 DSH 会话（外部模式）：安装 bridge 插件后发送“连接这个方案：<url>”，将 <url> 换成复制的链接。"));
     const settings = make("details", "agent-settings"), settingsSummary = make("summary", "", "连接与模型设置"), settingsForm = make("form", "agent-settings-form");
     const modelLabel = make("label", "", "模型 ID"), modelInput = make("input"), effortLabel = make("label", "", "推理强度"), effortInput = make("select");
     const settingsUid = host.id || "sim-advisor-agent";
@@ -159,7 +159,9 @@ window.SimAdvisorAgentPanel = (() => {
       setIfChanged(host, "hidden", !sessionId);
       if (!sessionId) { notify(); return; }
       const link = bindingURL(); if (dshLinkInput.value !== link) dshLinkInput.value = link;
-      setIfChanged(copyDshLink, "disabled", !current() || copyingLink); textIfChanged(copyDshLink, copyingLink ? "正在复制…" : "复制 DSH 绑定链接");
+      // The button itself confirms a copy, so nothing shifts; it never flashes an in-progress label.
+      const copied = Date.now() < copiedUntil;
+      setIfChanged(copyDshLink, "disabled", !current()); textIfChanged(copyDshLink, copied ? "✓ 已复制链接" : "复制 DSH 绑定链接"); classIfChanged(copyDshLink, "is-copied", copied);
       const state = snapshot?.status || "disconnected", external = connectionMode() === "external", binding = snapshot?.external || {}, live = externalLive(), backend = managedBackend(), backendTitle = backendName(backend), startBlocked = managedStartBlocked();
       textIfChanged(status, external ? !binding.registered ? "外部 Agent 未绑定" : !live ? binding.offline_reason === "process_exited" ? "外部 · 已离线" : "外部 · 心跳失联" : state === "running" ? "外部 · 运行中" : "外部 · 已接入" : labels[state] || "状态待核对"); setIfChanged(status.dataset, "status", external && binding.registered && !live ? "error" : state);
       textIfChanged(connect, external ? live ? "外部已接入" : binding.registered ? "外部 Agent 已离线" : "外部 Agent 未绑定" : snapshot?.connected ? `${backendTitle} 已连接` : `连接 ${backendTitle}`);
@@ -296,24 +298,39 @@ window.SimAdvisorAgentPanel = (() => {
       if (sessionId) drafts.set(sessionId, input.value);
       rememberSettingsDraft();
       epoch++; pollSerial++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear();
-      sessionId = nextId; autoLoading = false; stateToken = null; pollController = null; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; messageCursor = "new";
+      sessionId = nextId; autoLoading = false; stateToken = null; pollController = null; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; copiedUntil = 0; clearTimeout(copiedTimer); messageCursor = "new";
       textIfChanged(dshCopyStatus, ""); dshCopyStatus.hidden = true; dshLinkDetails.open = false;
       const configDraft = settingsDrafts.get(nextId); setManagedFields(configDraft || { managed_backend: "codex", model: "", reasoning_effort: "xhigh" }); modeInput.value = configDraft?.connection_mode || "managed";
       clearMessages(); input.value = drafts.get(nextId) || ""; conversation.open = true; settings.open = false; render(); if (nextId) poll(epoch);
     }
     connect.addEventListener("click", () => command("connect"));
+    // Clipboard API first; pages opened over a LAN address are not a secure context and have none,
+    // so fall back to copying a selected off-screen field before asking for a manual copy.
+    async function copyText(text) {
+      if (window.navigator?.clipboard?.writeText) { try { await window.navigator.clipboard.writeText(text); return true; } catch { /* fall through */ } }
+      if (typeof document.execCommand !== "function" || !document.body) return false;
+      const area = document.createElement("textarea"); area.value = text; area.readOnly = true; area.setAttribute("aria-hidden", "true");
+      area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none";
+      const focused = document.activeElement; document.body.append(area);
+      try { area.select(); return document.execCommand("copy") === true; } catch { return false; }
+      finally { area.remove(); focused?.focus?.({preventScroll: true}); }
+    }
     copyDshLink.addEventListener("click", async () => {
       if (!current() || copyingLink) return;
-      const token = epoch, id = sessionId, link = bindingURL(); copyingLink = true; dshCopyStatus.hidden = true; render();
+      const token = epoch, id = sessionId, link = bindingURL(); copyingLink = true;
       try {
-        if (!window.navigator?.clipboard?.writeText) throw new Error("clipboard_unavailable");
-        await window.navigator.clipboard.writeText(link);
+        const ok = await copyText(link);
         if (token !== epoch || id !== sessionId || !current()) return;
-        textIfChanged(dshCopyStatus, "链接已复制。在 DSH 当前会话发送“连接这个方案：”并粘贴链接。"); dshCopyStatus.hidden = false;
-      } catch {
-        if (token !== epoch || id !== sessionId || !current()) return;
-        textIfChanged(dshCopyStatus, "浏览器未允许复制，请在“手动复制链接”中选取完整地址。"); dshCopyStatus.hidden = false; dshLinkDetails.open = true; dshLinkInput.value = link; dshLinkInput.focus(); dshLinkInput.select();
-      } finally { if (token === epoch) { copyingLink = false; render(); } }
+        if (ok) {
+          const width = copyDshLink.getBoundingClientRect?.().width; if (copyDshLink.style && !copyDshLink.style.minWidth && width) copyDshLink.style.minWidth = `${width}px`;
+          copiedUntil = Date.now() + 2500; clearTimeout(copiedTimer); copiedTimer = setTimeout(() => { copiedUntil = 0; render(); }, 2500);
+          classIfChanged(dshCopyStatus, "visually-hidden", true); textIfChanged(dshCopyStatus, "DSH 绑定链接已复制。"); dshCopyStatus.hidden = false;
+        } else {
+          classIfChanged(dshCopyStatus, "visually-hidden", false); textIfChanged(dshCopyStatus, "未能自动复制。上方链接已选中，请按 Ctrl+C（Mac 为 ⌘C）复制。"); dshCopyStatus.hidden = false;
+          dshLinkDetails.open = true; dshLinkInput.value = link; dshLinkInput.focus?.(); dshLinkInput.select?.();
+        }
+        render();
+      } finally { if (token === epoch) copyingLink = false; }
     });
     stop.addEventListener("click", () => command("interrupt"));
     disconnect.addEventListener("click", () => command("disconnect"));
@@ -333,7 +350,7 @@ window.SimAdvisorAgentPanel = (() => {
     let lastWake = 0;
     // A hidden tab releases its held request: browsers allow only ~6 connections per origin.
     function onVisibility() { if (pageHidden()) { pollSerial++; clearTimeout(timer); pollController?.abort(); pollController = null; return; } if (!sessionId || commandPending || Date.now() - lastWake < 1000) return; lastWake = Date.now(); poll(); }
-    function destroy() { destroyed = true; epoch++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear(); document.removeEventListener?.("visibilitychange", onVisibility); window.removeEventListener?.("focus", onVisibility); }
+    function destroy() { destroyed = true; epoch++; clearTimeout(timer); clearTimeout(copiedTimer); for (const controller of controllers) controller.abort(); controllers.clear(); document.removeEventListener?.("visibilitychange", onVisibility); window.removeEventListener?.("focus", onVisibility); }
     document.addEventListener?.("visibilitychange", onVisibility); window.addEventListener?.("focus", onVisibility);
     window.addEventListener("pagehide", destroy, { once: true });
     bindSession();
