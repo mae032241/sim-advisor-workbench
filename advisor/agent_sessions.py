@@ -200,6 +200,10 @@ class AgentSessions:
                 raise FileNotFoundError("方案已删除或恢复，请重新加载。")
             return self._chat_updates(entry, after)
 
+    def _plan_revision(self, sid):
+        reader = getattr(self.sessions, "revision", None)
+        return reader(sid) if callable(reader) else self.sessions.get(sid)["revision"]
+
     def status(self, sid, *, after=_UNSET):
         entry = self._entry(sid)
         with self.lock:
@@ -218,7 +222,7 @@ class AgentSessions:
                     "pid":external.get("pid"),"thread_id":external.get("conversation_id"),
                     "conversation_id":external.get("conversation_id"),"backend":external.get("backend", "external-agent"),
                     "status":external.get("status","disconnected") if alive else "disconnected",
-                    "active_turn_id":external.get("turn_id"),"plan_revision":self.sessions.get(sid)["revision"],
+                    "active_turn_id":external.get("turn_id"),"plan_revision":self._plan_revision(sid),
                     "model":external.get("model") or "未报告","reasoning_effort":external.get("reasoning_effort") or "未报告",
                     **managed,
                     "external":external,**chat,
@@ -227,7 +231,7 @@ class AgentSessions:
                 "connection_mode":mode,"external":external,
                 "pid": state.get("pid"), "thread_id": entry["record"].get("thread_id"),
                 "status": "running" if alive and state.get("busy") else "idle" if alive else "error" if entry["error"] else "disconnected",
-                "active_turn_id": state.get("turn_id"), "plan_revision": self.sessions.get(sid)["revision"],
+                "active_turn_id": state.get("turn_id"), "plan_revision": self._plan_revision(sid),
                 "backend": self._managed_provenance(entry)["backend"], "conversation_id": entry["record"].get("thread_id"),
                 "model": state.get("model") or entry["record"]["model"],
                 "reasoning_effort": state.get("reasoning_effort") or entry["record"]["reasoning_effort"],

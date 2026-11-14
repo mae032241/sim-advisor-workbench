@@ -498,6 +498,8 @@ function emptyModel() {
 function renderModel(container = $("model-content"), model = state.model, intake = true) {
   if (!container) return;
   if (!state.meshArt) { const svg = container.querySelector("svg"); if (svg) state.meshArt = svg.cloneNode(true); }
+  const key = JSON.stringify(model ?? null);
+  if (container.renderKey === key && container.childElementCount) return; container.renderKey = key;
   container.replaceChildren();
   if (!model) { (intake ? $("model-badge") : {}).textContent = "等待读取"; (intake ? $("model-badge") : {}).className = "badge badge-neutral"; container.append(emptyModel()); return; }
   const cad = isGeometry(model);
@@ -689,9 +691,12 @@ function renderSession() {
   $("export-json").href = `/api/sessions/${encodeURIComponent(session.id)}/export?format=json`;
   renderPlanningState(); renderPlan(); renderSources(); renderQuestions(); renderHistory(); syncRefine(); renderSessions(); selectTab(state.tab, false, false);
 }
+let planningStateKey = null;
 function renderPlanningState() {
-  const container = $("planning-state"); container.replaceChildren();
-  const planned = hasAgentPlan(); container.hidden = planned && !state.session?.plan_stale;
+  const container = $("planning-state"), planned = hasAgentPlan();
+  const key = JSON.stringify([state.session?.id, planned, state.session?.plan_stale, state.session?.planning_incomplete, unresolvedQuestions(false).length > 0, hasMethodEvidenceGaps()]);
+  if (key === planningStateKey) return; planningStateKey = key;
+  container.replaceChildren(); container.hidden = planned && !state.session?.plan_stale;
   if (container.hidden) return;
   const content = el("div");
   content.append(el("h3", "", !planned ? "任务已建立 · 待规划" : state.session?.plan_stale ? "输入已更新 · 方案待更新" : "研究尚未完成"));
@@ -980,8 +985,12 @@ function renderUnmappedSettings(container, steps, session = state.session) {
 function renderSimulationFlow(container, steps, session = state.session) {
   if (!steps.length) { container.append(el("p", "inline-empty", "尚未形成实施流程。先完成 Agent 规划，再逐环节核对。")); renderUnmappedSettings(container, steps, session); return; }
   container.append(el("h3", "plan-block-title", `建模流程 · ${steps.length} 步`));
-  const flow = el("ol", "simulation-flow");
+  const flow = el("ol", "simulation-flow"), reuse = session === state.session, previous = reuse ? new Map(flowNodeCache) : null;
+  if (reuse) flowNodeCache.clear();
+  const sourceState = JSON.stringify(list(session?.sources).map((source) => [source.id, source.availability?.readable])), stepTitles = JSON.stringify(steps.map((item) => [item.id, item.title]));
   steps.forEach((step, index) => {
+    const nodeKey = JSON.stringify([step, index, session?.plan_stale, sourceState, stepTitles, list(session?.plan_settings).filter((row) => list(row?.step_ids).includes(step.id))]);
+    if (reuse && previous.has(nodeKey)) { const kept = previous.get(nodeKey); flowNodeCache.set(nodeKey, kept); flow.append(kept); return; }
     const mesh = /网格|\bmesh\b/i.test([step.title, step.location, step.selection].filter(Boolean).join(" "));
     const item = el("li", "flow-node"); item.dataset.stepId = step.id || String(index + 1); if (mesh) item.dataset.stage = "mesh";
     const details = el("details", "flow-node-details"), summary = el("summary", "flow-node-summary"), heading = el("span", "flow-node-heading");
@@ -995,12 +1004,29 @@ function renderSimulationFlow(container, steps, session = state.session) {
     if (list(step.checks).length) { const checks = el("section", "flow-section"); checks.append(el("h4", "", "验收与检查")); const ul = el("ul", "step-checks"); step.checks.forEach((check) => ul.append(el("li", "", check))); checks.append(ul); (original === body ? body : original).append(checks); }
     renderStepSettings(body, step, session);
     const dependencies = el("div", "flow-dependencies"); dependencies.append(el("span", "", "前置步骤："));
-    list(step.depends_on).forEach((id) => { const dependency = steps.find((candidate) => candidate.id === id), link = el("button", "citation flow-dependency", dependency ? `${id} · ${dependency.title}` : `${id}（未找到对应节点）`); link.type = "button"; link.addEventListener("click", () => { const target = Array.from(flow.children).find((node) => node.dataset.stepId === id); if (!target) return; target.querySelector("details").open = true; target.scrollIntoView({ behavior: "smooth", block: "center" }); target.querySelector("summary")?.focus({ preventScroll: true }); }); dependencies.append(link); }); if (list(step.depends_on).length) body.append(dependencies); appendCitations(body, step.source_ids, session);
-    details.append(summary, body); item.append(details); flow.append(item);
+    list(step.depends_on).forEach((id) => { const dependency = steps.find((candidate) => candidate.id === id), link = el("button", "citation flow-dependency", dependency ? `${id} · ${dependency.title}` : `${id}（未找到对应节点）`); link.type = "button"; link.addEventListener("click", () => { const target = Array.from((item.parentElement || flow).children).find((node) => node.dataset.stepId === id); if (!target) return; target.querySelector("details").open = true; target.scrollIntoView({ behavior: "smooth", block: "center" }); target.querySelector("summary")?.focus({ preventScroll: true }); }); dependencies.append(link); }); if (list(step.depends_on).length) body.append(dependencies); appendCitations(body, step.source_ids, session);
+    details.append(summary, body); item.append(details); flow.append(item); if (reuse) flowNodeCache.set(nodeKey, item);
   }); container.append(flow); renderUnmappedSettings(container, steps, session);
 }
+// Agent saves can arrive every few seconds; rebuilding the whole plan replaced the element under the
+// pointer (hover flicker) and collapsed whatever the user had opened. Skip unchanged plans, reuse
+// unchanged step nodes and carry open disclosures across a rebuild.
+let planRenderKey = null;
+const flowNodeCache = new Map();
+function planContentKey(session) {
+  const answers = Object.fromEntries(list(session?.questions).filter((question) => question.id.startsWith("decision_")).map((question) => [question.id, session.answers?.[question.id]]));
+  return JSON.stringify([session?.id, session?.plan, session?.design_brief, session?.model, session?.plan_settings, session?.research_trace, session?.plan_stale, session?.planning_incomplete, session?.status,
+    list(session?.sources).map((source) => [source.id, source.title, source.availability?.readable]), list(session?.questions).map((question) => [question.id, question.label, question.reason]), answers]);
+}
+function openDisclosureKeys(container) {
+  return new Set(Array.from(container.querySelectorAll("details[open]")).filter((details) => !details.closest(".flow-node")).map((details) => details.id || details.querySelector("summary")?.textContent?.trim()).filter(Boolean));
+}
 function renderPlan() {
-  const container = $("plan-content"); container.replaceChildren(); const plan = state.session?.plan || {}; state.overviewNodes = null;
+  const container = $("plan-content"), key = planContentKey(state.session);
+  if (key === planRenderKey && container.childElementCount) { renderPlanGaps(); renderResearchTrace(); return; }
+  planRenderKey = key;
+  const reopen = openDisclosureKeys(container);
+  container.replaceChildren(); const plan = state.session?.plan || {}; state.overviewNodes = null;
   renderOverview(container);
   const tabs = el("div", "plan-view-tabs"); tabs.id = "plan-view-tabs"; tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "方案内容");
   const views = [["flow", `建模流程${list(plan.steps).length ? ` · ${list(plan.steps).length} 步` : ""}`], ["design", "路线与依据"]];
@@ -1009,6 +1035,7 @@ function renderPlan() {
   flow.id = "plan-view-flow"; design.id = "plan-view-design"; [flow, design].forEach((panel, index) => { panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", `plan-tab-${views[index][0]}`); });
   renderSimulationFlow(flow, list(plan.steps)); renderDesignBrief(design);
   container.append(tabs, flow, design); showPlanView(state.planView);
+  container.querySelectorAll("details").forEach((details) => { if (!details.closest(".flow-node") && reopen.has(details.id || details.querySelector("summary")?.textContent?.trim())) details.open = true; });
   renderPlanGaps(); renderResearchTrace();
 }
 function renderPlanGaps() {
@@ -1021,9 +1048,13 @@ function renderPlanGaps() {
 }
 const traceStages = { conversation: "Agent 规划", interactive_edit: "修改步骤", search: "检索资料", read: "阅读来源", retrieve: "读取来源", formulation: "形成检索问题", questions: "整理问题", validation: "校验方案", readiness: "就绪检查", evidence_feedback: "依据反馈", research_budget: "研究预算", source_budget: "来源预算" };
 const traceStatuses = { completed: "完成", blocked_evidence: "依据不足", draft_validated: "草稿校验通过", steps_updated: "已更新步骤", budget_exhausted: "预算用尽", source_budget_exhausted: "来源数已达上限", failed: "失败", blocked: "受阻", unavailable: "来源不可用", rejected_invalid_provenance: "来源出处无效", rejected_empty_context: "上下文为空", partial_draft_retained: "保留部分草稿", research_requested: "请求补充研究", hypotheses: "形成假设", needs_replan: "需要重新规划", retired: "已撤回" };
+let researchTraceKey = null;
 function renderResearchTrace() {
-  const container = $("research-trace"); if (!container) return; container.replaceChildren();
-  const raw = state.session?.research_trace ?? state.session?.plan?.research_trace, entries = Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : [];
+  const container = $("research-trace"); if (!container) return;
+  const raw = state.session?.research_trace ?? state.session?.plan?.research_trace, key = JSON.stringify([state.session?.id, raw ?? null]);
+  if (key === researchTraceKey && container.childElementCount) return; researchTraceKey = key;
+  const rawOpen = Boolean(container.querySelector?.("details.trace-raw[open]")); container.replaceChildren();
+  const entries = Array.isArray(raw) ? raw.filter((item) => item && typeof item === "object") : [];
   container.append(el("h3", "", "研究轨迹"));
   if (!entries.length) { container.append(el("p", "inline-empty", typeof raw === "string" && raw.trim() ? raw : "这一版还没有研究记录。")); return; }
   const ol = el("ol", "trace-list");
@@ -1043,7 +1074,7 @@ function renderResearchTrace() {
     ol.append(li);
   });
   container.append(ol);
-  const details = disclosure("原始记录（排查用）", "trace-raw"); details.content.append(el("pre", "raw-snapshot", JSON.stringify(raw, null, 2))); container.append(details.details);
+  const details = disclosure("原始记录（排查用）", "trace-raw"); details.content.append(el("pre", "raw-snapshot", JSON.stringify(raw, null, 2))); details.details.open = rawOpen; container.append(details.details);
 }
 function renderSources() {
   const sources = list(state.session?.sources), container = $("source-list"); container.replaceChildren(); $("source-count").textContent = String(sources.length);
@@ -1062,8 +1093,14 @@ function updateDirty() {
   state.dirty = list(state.session?.questions).some((question) => questionValue(question) !== normalizedAnswer(question, state.session?.answers?.[question.id]));
   agentPanel?.bindSession();
 }
+let questionsRenderKey = null;
 function renderQuestions() {
-  const container = $("question-list"); container.replaceChildren(); state.questionGroups = []; $("intent-form").noValidate = true;
+  const container = $("question-list"), session = state.session;
+  const key = JSON.stringify([session?.id, session?.questions ?? null, session?.answers ?? null, state.draftAnswers, hasAgentPlan()]);
+  if (key === questionsRenderKey && container.childElementCount) { syncConfirmation(); return; }
+  questionsRenderKey = key;
+  const reopen = new Set(Array.from(container.querySelectorAll?.("details[open]") || []).map((details) => details.dataset?.group).filter(Boolean));
+  container.replaceChildren(); state.questionGroups = []; $("intent-form").noValidate = true;
   const questions = list(state.session?.questions), entries = questions.map((question, index) => ({ question, index }));
   if (!questions.length) container.append(el("p", "inline-empty", hasAgentPlan() ? "当前方案未提出额外意图问题。请核对建模路线、前提与来源。" : "Agent 尚未提出建模问题。请先启动规划，让 Agent 结合你的几何与目标识别需要明确的选择。"));
   const resolved = (entry) => isQuestionResolved(entry.question, questionValue(entry.question));
@@ -1073,6 +1110,7 @@ function renderQuestions() {
     if (!groupEntries.length) return;
     const wrapper = primary ? el("section", "question-priority") : el("details", "disclosure-section question-group"), summary = el(primary ? "h3" : "summary", "", title), content = el("div", "question-group-content");
     wrapper.append(summary);
+    if (!primary) { if (wrapper.dataset) wrapper.dataset.group = title; if (reopen.has(title)) wrapper.open = true; }
     if (primary) wrapper.append(el("p", "question-group-note", "先展示这几项，完整问题仍保留在下方；填写它们不代表已满足全部确认条件。"));
     wrapper.append(content); container.append(wrapper); state.questionGroups.push({ entries: groupEntries, title, summary, primary });
     groupEntries.forEach((entry) => content.append(renderField(entry.question, entry.index)));
@@ -1099,7 +1137,7 @@ function renderQuestions() {
   syncConfirmation();
 }
 function syncQuestionGroupCounts() {
-  state.questionGroups.forEach((group) => { const unresolved = group.entries.filter(({ question }) => question.required && !isQuestionResolved(question, questionValue(question))).length; group.summary.textContent = `${group.title}（${group.entries.length} 项${unresolved ? ` · ${unresolved} 项必填待明确` : ""}）`; });
+  state.questionGroups.forEach((group) => { const unresolved = group.entries.filter(({ question }) => question.required && !isQuestionResolved(question, questionValue(question))).length; textIfChanged(group.summary, `${group.title}（${group.entries.length} 项${unresolved ? ` · ${unresolved} 项必填待明确` : ""}）`); });
 }
 function updateQuestionStatus(question, field, status) {
   const answered = isQuestionResolved(question, questionValue(question)); field.classList.toggle("unanswered", !answered);
@@ -1171,8 +1209,11 @@ async function supplementSimplification() {
   const id = state.session.id;
   if (await agentPanel?.sendTask("请基于当前已保存的模型解析、目标与建模路线，结合真实相近案例补充模型简化分析，并更新会话中的结构化简化指导。逐项说明对象、可核对几何事实、成立条件、收益、可能损失与验证方式；未定位特征保持待检查，不把建议说成已修改CAD。本次只分析和规划，不修改模型或求解。")) { if (state.session?.id !== id) return; selectTab("plan"); notice("简化分析任务已发送到当前 Agent 对话。请等待回复和方案更新，再核对新建议。"); }
 }
+let historyRenderKey = null;
 function renderHistory() {
   const container = $("history-list"), view = versionsState?.sessionId === state.session?.id ? versionsState : null;
+  const key = JSON.stringify([state.session?.id, state.session?.revision, state.session?.history ?? null, view?.listBusy, view?.listError, view?.loadedRevision, view?.loadedRevision === state.session?.revision ? view?.versions : null]);
+  if (key === historyRenderKey && $("history-operations").childElementCount) return; historyRenderKey = key;
   container.replaceChildren();
   textIfChanged($("history-status"), view?.listBusy ? "正在读取版本列表…" : view?.listError || (view?.loadedRevision === state.session?.revision ? "点击有快照的版本，只读查看完整方案。" : "打开「方案版本」或点击刷新，读取可用历史快照。"));
   if (view?.loadedRevision === state.session?.revision) renderVersionItems(container, view.versions);

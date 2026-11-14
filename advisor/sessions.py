@@ -169,6 +169,25 @@ class SessionStore:
             raise ValueError("方案生命周期版本无效。")
         return value
 
+    def revision(self, session_id: str) -> int:
+        """Current revision for status polls, without re-parsing an unchanged plan file."""
+        with self.lock:
+            if self._trash_path(session_id).exists():
+                raise FileNotFoundError("方案已移入已删除列表。")
+            path = self.path(session_id)
+            try:
+                stat = path.stat()
+            except FileNotFoundError as exc:
+                raise FileNotFoundError("会话不存在。") from exc
+            cache = self.__dict__.setdefault("_revision_cache", {})
+            signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+            cached = cache.get(session_id)
+            if cached and cached[0] == signature:
+                return cached[1]
+            value = self._record(path, session_id)["revision"]
+            cache[session_id] = (signature, value)
+            return value
+
     def get(self, session_id: str) -> dict:
         with self.lock:
             try:

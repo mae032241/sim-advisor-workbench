@@ -14,7 +14,7 @@ window.SimAdvisorAgentPanel = (() => {
     };
     const button = (text, className = "button button-subtle") => { const node = make("button", className, text); node.type = "button"; return node; };
     const labels = { disconnected: "未连接", starting: "正在连接", idle: "已连接 · 空闲", running: "运行中", error: "连接异常" };
-    let sessionId = null, epoch = 0, pollSerial = 0, timer = null, snapshot = null, commandPending = false, refreshingPlan = false, pendingRevision = null, localError = "", commandError = "", destroyed = false, notifiedState = "", savedSettings = null, copyingLink = false, backendData = null, backendChoicesKey = "", effortChoicesKey = "", fieldBackend = "codex", messageCursor = "new";
+    let sessionId = null, epoch = 0, pollSerial = 0, timer = null, snapshot = null, commandPending = false, refreshingPlan = false, pendingRevision = null, autoLoading = false, localError = "", commandError = "", destroyed = false, notifiedState = "", savedSettings = null, copyingLink = false, backendData = null, backendChoicesKey = "", effortChoicesKey = "", fieldBackend = "codex", messageCursor = "new";
     const controllers = new Set(), drafts = new Map(), settingsDrafts = new Map(), backendDrafts = new Map();
     const messages = new Map(), messageRows = new Map(), messageSequences = new Map();
     const defaultBackends = [
@@ -107,8 +107,8 @@ window.SimAdvisorAgentPanel = (() => {
       if (pendingRevision != null && local != null && local >= pendingRevision) pendingRevision = null;
     }
     function notify() {
-      const detail = { ...(snapshot || { status: "disconnected", connected: false }), commandPending, settingsDirty: settingsDirty(), updateAvailable: pendingRevision != null, refreshingPlan };
-      const key = JSON.stringify([sessionId, detail.status, detail.connected, commandPending, detail.settingsDirty, detail.updateAvailable, refreshingPlan, detail.model, detail.reasoning_effort, detail.connection_mode, detail.managed_backend, detail.external?.registered, detail.external?.alive, detail.external?.name]);
+      const detail = { ...(snapshot || { status: "disconnected", connected: false }), commandPending, settingsDirty: settingsDirty(), updateAvailable: pendingRevision != null && !autoLoading, refreshingPlan: refreshingPlan && !autoLoading };
+      const key = JSON.stringify([sessionId, detail.status, detail.connected, commandPending, detail.settingsDirty, detail.updateAvailable, detail.refreshingPlan, detail.model, detail.reasoning_effort, detail.connection_mode, detail.managed_backend, detail.external?.registered, detail.external?.alive, detail.external?.name]);
       if (key !== notifiedState) { notifiedState = key; options.onState?.(detail); }
     }
     function clearMessages(reset = false) {
@@ -196,7 +196,7 @@ window.SimAdvisorAgentPanel = (() => {
       textIfChanged(activity, running() ? String(reportText || "Agent 正在处理任务，回复会自动更新。").slice(0, 200) : ""); setIfChanged(activity, "hidden", !activity.textContent);
       const reply = [...messages.values()].reverse().find((message) => message.role === "assistant" && message.text);
       textIfChanged(latest, reply ? `最近回复：${String(reply.text).slice(0, 180)}${String(reply.text).length > 180 ? "…（展开查看全文）" : ""}` : external && !binding.registered ? "外部 Agent 未绑定。重新绑定后才能在这里收发消息。" : running() ? "任务已交给 Agent，正在等待回复。" : "可直接讨论当前任务，或用规划按钮交给 Agent 继续。");
-      setIfChanged(update, "hidden", pendingRevision == null);
+      setIfChanged(update, "hidden", pendingRevision == null || autoLoading);
       textIfChanged(updateText, dirty() ? "方案有更新；可刷新流程并保留仍适用的回答。" : refreshingPlan ? "正在读取更新后的流程…" : "方案有更新，可刷新流程。");
       textIfChanged(refresh, dirty() ? "刷新并保留回答" : "刷新流程");
       setIfChanged(refresh, "disabled", busy() || refreshingPlan || commandPending);
@@ -231,7 +231,7 @@ window.SimAdvisorAgentPanel = (() => {
     }
     async function readPlan(token = epoch, preserveDrafts = false) {
       if (!current() || refreshingPlan || pendingRevision == null || (dirty() && !preserveDrafts) || busy()) return;
-      const id = sessionId, controller = new AbortController(); controllers.add(controller); refreshingPlan = true; render();
+      const id = sessionId, controller = new AbortController(); controllers.add(controller); refreshingPlan = true; if (preserveDrafts) render();
       try {
         const {response, data} = await boundedJSON(`/api/sessions/${encodeURIComponent(id)}`, controller);
         if (!response.ok) throw new Error(data.error || `读取流程失败（HTTP ${response.status}）。`);
@@ -240,7 +240,7 @@ window.SimAdvisorAgentPanel = (() => {
         if (data.id !== id || received == null || (local != null && received < local)) return;
         await options.onSession?.(data, { preserveDrafts }); localError = ""; if (preserveDrafts) commandError = ""; rememberRevision();
       } catch (error) { if (token === epoch && error.name !== "AbortError") { if (preserveDrafts) commandError = error.message; else localError = error.message; } }
-      finally { controllers.delete(controller); if (token === epoch) { refreshingPlan = false; render(); } }
+      finally { controllers.delete(controller); if (token === epoch) { refreshingPlan = false; autoLoading = false; render(); } }
     }
     // Poll on a timer only while something can change on its own: a connected or running Agent, a bound
     // external Agent, or a plan update waiting to load. Idle pages check when opened, focused or shown.
@@ -254,7 +254,7 @@ window.SimAdvisorAgentPanel = (() => {
       if (!current() || commandPending || pageHidden()) return;
       try {
         const result = await request("", undefined, token);
-        if (result && token === epoch && serial === pollSerial) { mergeMessages(result); applySettings(result); snapshot = result; localError = ""; rememberRevision(); render(); await readPlan(token); }
+        if (result && token === epoch && serial === pollSerial) { mergeMessages(result); applySettings(result); snapshot = result; localError = ""; rememberRevision(); autoLoading = pendingRevision != null && !dirty() && !busy() && !refreshingPlan; render(); try { await readPlan(token); } finally { if (autoLoading) { autoLoading = false; render(); } } }
       } catch (error) { if (token === epoch && serial === pollSerial && error.name !== "AbortError") { localError = error.message; render(); } }
       finally { if (token === epoch && serial === pollSerial && current() && !pageHidden() && (live() || !snapshot)) timer = setTimeout(() => poll(token), 2000); }
     }
@@ -283,7 +283,7 @@ window.SimAdvisorAgentPanel = (() => {
       if (sessionId) drafts.set(sessionId, input.value);
       rememberSettingsDraft();
       epoch++; pollSerial++; clearTimeout(timer); for (const controller of controllers) controller.abort(); controllers.clear();
-      sessionId = nextId; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; messageCursor = "new";
+      sessionId = nextId; autoLoading = false; snapshot = null; savedSettings = null; backendData = null; backendChoicesKey = ""; effortChoicesKey = ""; pendingRevision = null; commandPending = false; refreshingPlan = false; localError = ""; commandError = ""; notifiedState = ""; copyingLink = false; messageCursor = "new";
       textIfChanged(dshCopyStatus, ""); dshCopyStatus.hidden = true; dshLinkDetails.open = false;
       const configDraft = settingsDrafts.get(nextId); setManagedFields(configDraft || { managed_backend: "codex", model: "", reasoning_effort: "xhigh" }); modeInput.value = configDraft?.connection_mode || "managed";
       clearMessages(); input.value = drafts.get(nextId) || ""; conversation.open = true; settings.open = false; render(); if (nextId) poll(epoch);
